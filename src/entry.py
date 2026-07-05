@@ -26,7 +26,7 @@ class Default(WorkerEntrypoint):
             if not confession_text:
                 return Response.json({"error": "No confession text found"}, status=400)
 
-            # --- DIAGNOSTIC CHECK FOR SECRETS ---
+            # Safely extract environment variables
             bot_token = getattr(self.env, "TELEGRAM_BOT_TOKEN", None)
             channel_id = getattr(self.env, "TELEGRAM_CHANNEL_ID", None)
 
@@ -39,10 +39,8 @@ class Default(WorkerEntrypoint):
                     status=500,
                 )
 
-            # Dispatch payload to Telegram API
+            # Formulate the outbound request manually
             telegram_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-
-            # Using plain text fallback just in case Markdown symbols (like underscores) crash it
             telegram_payload = json.dumps(
                 {
                     "chat_id": channel_id,
@@ -55,7 +53,6 @@ class Default(WorkerEntrypoint):
                 telegram_url, method="POST", headers=headers, body=telegram_payload
             )
 
-            # Send to Telegram and capture their actual response
             tg_response = await fetch(tg_request)
             tg_status = tg_response.status
             tg_text = await tg_response.text()
@@ -63,9 +60,9 @@ class Default(WorkerEntrypoint):
             if tg_status != 200:
                 return Response.json(
                     {
-                        "error": "Telegram API Rejected Request",
+                        "error": "Telegram API Rejected Message",
                         "status_code": tg_status,
-                        "telegram_error": tg_text,
+                        "details": tg_text,
                     },
                     status=500,
                 )
@@ -74,5 +71,5 @@ class Default(WorkerEntrypoint):
 
         except Exception as e:
             return Response.json(
-                {"error": "Worker crashed internally", "details": str(e)}, status=500
+                {"error": "Internal crash", "details": str(e)}, status=500
             )
