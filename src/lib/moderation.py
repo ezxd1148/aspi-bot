@@ -14,6 +14,8 @@ APIS = [
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "key_env": "OPENROUTER_API_KEY",
         "model": "poolside/laguna-xs-2.1:free",  # free tier
+        "timeout": 15,
+        "extra_body": {"reasoning_effort": "none"},
         "extra_headers": {
             "HTTP-Referer": "https://github.com/aspi-bot",
             "X-Title": "aspi-bot",
@@ -23,13 +25,17 @@ APIS = [
         "name": "nvidia",
         "url": "https://integrate.api.nvidia.com/v1/chat/completions",
         "key_env": "NVIDIA_API_KEY",
-        "model": "z-ai/glm-5.2",
+        "model": "mistralai/mistral-medium-3.5-128b",
+        "timeout": 60,  # cold starts on large models can take 20-30s
+        "extra_body": {"reasoning_effort": "none"},
     },
     {
         "name": "deepseek",
         "url": "https://api.deepseek.com/v1/chat/completions",
         "key_env": "DEEPSEEK_API_KEY",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-v4-pro",
+        "timeout": 30,
+        "extra_body": {"thinking": {"type": "disabled"}, "reasoning_effort": "low"},
     },
 ]
 
@@ -77,10 +83,16 @@ def moderate_text(text: str) -> str:
             ],
             "max_tokens": 500,
             "temperature": 0.1,
+            **api.get("extra_body", {}),
         }
 
         try:
-            resp = requests.post(api["url"], headers=headers, json=payload, timeout=15)
+            resp = requests.post(
+                api["url"],
+                headers=headers,
+                json=payload,
+                timeout=api.get("timeout", 30),
+            )
 
             if resp.status_code == 200:
                 data = resp.json()

@@ -163,6 +163,8 @@ async def check_tally(context) -> None:
         return
 
     submissions = data.get("submissions", [])
+    tasks = []
+
     for sub in submissions:
         sid = sub.get("id")
         if not sid or lib.tracker.is_processed(sid):
@@ -173,52 +175,58 @@ async def check_tally(context) -> None:
             lib.tracker.mark_processed(sid)
             continue
 
-        # ── AI moderation ──
-        if text:
-            result = await loop.run_in_executor(
-                None, lib.moderation.moderate_text, text
-            )
-            if result == "clean":
-                await _broadcast(context.bot, text, files)
-                lib.tracker.mark_processed(sid)
-                print(f"  Auto-approved: {text[:60]}...")
-                continue
+        tasks.append(_handle_submission(context, sid, text, files))
 
-        # ── Manual review (flagged or files-only) ──
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("✅ Approve", callback_data=f"ok_{sid}"),
-                    InlineKeyboardButton("❌ Reject", callback_data=f"no_{sid}"),
-                ]
-            ]
-        )
+    if tasks:
+        await asyncio.gather(*tasks)
 
-        dm_text = (
-            f"📩 <b>New confession:</b>\n\n{text}"
-            if text
-            else "📩 <b>New confession (files only):</b>"
-        )
-        if files:
-            names = "\n".join(f"📎 {f['name']}" for f in files)
-            dm_text += f"\n\n<b>Attachments:</b>\n{names}"
 
-        try:
-            msg = await context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=dm_text,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-            await _send_files(
-                context.bot, ADMIN_CHAT_ID, files, reply_to=msg.message_id
-            )
+async def _handle_submission(context, sid: str, text: str, files: list[dict]) -> None:
+    """Process a single submission: moderate, then auto-broadcast or DM admin."""
+    loop = asyncio.get_running_loop()
 
+    # ── AI moderation ──
+    if text:
+        result = await loop.run_in_executor(None, lib.moderation.moderate_text, text)
+        if result == "clean":
+            await _broadcast(context.bot, text, files)
             lib.tracker.mark_processed(sid)
-            lib.pending.save_pending(sid, text, files)
-            print(f"Notified admin: {text[:60] if text else '(files only)'}...")
-        except Exception as e:
-            print(f"Failed to DM admin: {e}")
+            print(f"  Auto-approved: {text[:60]}...")
+            return
+
+    # ── Manual review (flagged or files-only) ──
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=f"ok_{sid}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"no_{sid}"),
+            ]
+        ]
+    )
+
+    dm_text = (
+        f"📩 <b>New confession:</b>\n\n{text}"
+        if text
+        else "📩 <b>New confession (files only):</b>"
+    )
+    if files:
+        names = "\n".join(f"📎 {f['name']}" for f in files)
+        dm_text += f"\n\n<b>Attachments:</b>\n{names}"
+
+    try:
+        msg = await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=dm_text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        await _send_files(context.bot, ADMIN_CHAT_ID, files, reply_to=msg.message_id)
+
+        lib.tracker.mark_processed(sid)
+        lib.pending.save_pending(sid, text, files)
+        print(f"Notified admin: {text[:60] if text else '(files only)'}...")
+    except Exception as e:
+        print(f"Failed to DM admin: {e}")
 
 
 async def button_handler(update: Update, context) -> None:

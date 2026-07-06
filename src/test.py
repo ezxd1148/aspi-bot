@@ -1,13 +1,21 @@
-import requests
+# Please install OpenAI SDK first: `pip3 install openai`
+import os
 
-api = "tly-obY3CPK7ZY030kyKMoUKDqKc5tR74k8R"
-form = "7R52G0"
-submissionId = "1WJEAGO"
+from openai import OpenAI
 
-url = f"https://api.tally.so/forms/{form}/submissions/{submissionId}"
+client = OpenAI(
+    api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com"
+)
 
-headers = {"Authorization": f"Bearer {api}"}
+response = client.chat.completions.create(
+    model="deepseek-v4-pro",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant"},
+        {"role": "user", "content": "Hello"},
+    ],
+    stream=False,
+    reasoning_effort="high",
+    extra_body={"thinking": {"type": "enabled"}},
+)
 
-response = requests.get(url, headers=headers)
-
-print(response.text)
+print(response.choices[0].message.content)
