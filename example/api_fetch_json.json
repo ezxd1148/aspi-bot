@@ -1,0 +1,53 @@
+{
+  "page": 123,
+  "limit": 123,
+  "hasMore": true,
+  "totalNumberOfSubmissionsPerFilter": {
+    "all": 123,
+    "completed": 123,
+    "partial": 123
+  },
+  "questions": [
+    {
+      "id": "<string>",
+      "title": "<string>",
+      "isTitleModifiedByUser": true,
+      "formId": "<string>",
+      "isDeleted": true,
+      "numberOfResponses": 123,
+      "createdAt": "2023-11-07T05:31:56Z",
+      "updatedAt": "2023-11-07T05:31:56Z",
+      "fields": [
+        {
+          "uuid": "3c90c3cc-0d44-4b50-8888-8dd25736052a",
+          "blockGroupUuid": "3c90c3cc-0d44-4b50-8888-8dd25736052a",
+          "title": "<string>"
+        }
+      ]
+    }
+  ],
+  "submissions": [
+    {
+      "id": "<string>",
+      "formId": "<string>",
+      "isCompleted": true,
+      "submittedAt": "2023-11-07T05:31:56Z",
+      "previewUrl": "<string>",
+      "pdfUrl": "<string>",
+      "responses": [
+        {
+          "id": "<string>",
+          "formId": "<string>",
+          "questionId": "<string>",
+          "respondentId": "<string>",
+          "sessionUuid": "3c90c3cc-0d44-4b50-8888-8dd25736052a",
+          "answer": "<string>",
+          "createdAt": "2023-11-07T05:31:56Z",
+          "updatedAt": "2023-11-07T05:31:56Z",
+          "submissionId": "<string>",
+          "formattedAnswer": "<string>"
+        }
+      ]
+    }
+  ]
+}
