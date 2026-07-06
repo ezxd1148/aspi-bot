@@ -1,21 +1,47 @@
-# Please install OpenAI SDK first: `pip3 install openai`
+import json
 import os
+
+import requests
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv()
+
+API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 from openai import OpenAI
 
 client = OpenAI(
-    api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com"
+    base_url="https://openrouter.ai/api/v1",
+    api_key=f"{API_KEY}",
 )
 
+# First API call with reasoning
 response = client.chat.completions.create(
-    model="deepseek-v4-pro",
+    model="poolside/laguna-xs-2.1:free",
     messages=[
-        {"role": "system", "content": "You are a helpful assistant"},
-        {"role": "user", "content": "Hello"},
+        {"role": "user", "content": "How many r's are in the word 'strawberry'?"}
     ],
-    stream=False,
-    reasoning_effort="high",
-    extra_body={"thinking": {"type": "enabled"}},
+    extra_body={"reasoning": {"enabled": True}},
 )
 
-print(response.choices[0].message.content)
+# Extract the assistant message with reasoning_details
+response = response.choices[0].message
+
+# Preserve the assistant message with reasoning_details
+messages = [
+    {"role": "user", "content": "How many r's are in the word 'strawberry'?"},
+    {
+        "role": "assistant",
+        "content": response.content,
+        "reasoning_details": response.reasoning_details,  # Pass back unmodified
+    },
+    {"role": "user", "content": "Are you sure? Think carefully."},
+]
+
+# Second API call - model continues reasoning from where it left off
+response2 = client.chat.completions.create(
+    model="poolside/laguna-xs-2.1:free",
+    messages=messages,
+    extra_body={"reasoning": {"enabled": True}},
+)

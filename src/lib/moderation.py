@@ -33,7 +33,7 @@ APIS = [
         "name": "deepseek",
         "url": "https://api.deepseek.com/v1/chat/completions",
         "key_env": "DEEPSEEK_API_KEY",
-        "model": "deepseek-v4-pro",
+        "model": "deepseek-v4-flash",
         "timeout": 30,
         "extra_body": {"thinking": {"type": "disabled"}, "reasoning_effort": "low"},
     },
