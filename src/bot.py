@@ -286,11 +286,26 @@ async def daily_reset(context) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
+async def _error_handler(update: object, context) -> None:
+    """Log errors cleanly — suppresses noisy tracebacks for transient network issues."""
+    err = context.error
+    # httpx.ReadError / NetworkError are transient — Telegram polling retries automatically
+    print(f"Non-critical error: {type(err).__name__}: {err}")
+
+
 def main() -> None:
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_error_handler(_error_handler)
 
     app.job_queue.run_repeating(check_tally, interval=POLL_INTERVAL, first=5)
 

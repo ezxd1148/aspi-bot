@@ -5,7 +5,10 @@ Rotates through available APIs automatically on failure.
 
 import os
 
+from dotenv import load_dotenv()
 import requests
+
+load_dotenv()
 
 # API configurations in priority order (free APIs first, paid last)
 APIS = [
