@@ -52,12 +52,16 @@ def main() -> None:
         if lib.tracker.is_processed(submission_id):
             continue
 
-        answer = lib.fetch_form.get_answers(submission)
-        if answer == "No text found.":
+        text, files = lib.fetch_form.extract_submission(submission)
+        if not text and not files:
             continue
 
+        print(f"Text: {text}")
+        for f in files:
+            print(f"  File: {f['name']} ({f['mime_type']})")
+
         success = lib.telegram_bot.send_message(
-            TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, answer
+            TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, text
         )
         if success:
             lib.tracker.mark_processed(submission_id)

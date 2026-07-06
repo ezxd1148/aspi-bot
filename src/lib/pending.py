@@ -28,16 +28,29 @@ def _save(data: dict) -> None:
         json.dump(data, f, indent=2)
 
 
-def save_pending(submission_id: str, text: str) -> None:
-    """Store submission text for later callback lookup."""
+def save_pending(submission_id: str, text: str, files: list[dict]) -> None:
+    """Store submission text and file attachments for callback lookup."""
     data = _load()
-    data[submission_id] = text
+    data[submission_id] = {"text": text, "files": files}
     _save(data)
 
 
-def get_pending(submission_id: str) -> str | None:
-    """Retrieve stored submission text by ID."""
-    return _load().get(submission_id)
+def get_pending(submission_id: str) -> dict | None:
+    """Retrieve stored submission data. Returns {text, files} or None.
+
+    Handles legacy string-only entries by wrapping them in the new format.
+    """
+    entry = _load().get(submission_id)
+    if entry is None:
+        return None
+    if isinstance(entry, str):
+        return {"text": entry, "files": []}
+    return entry
+
+
+def clear_all() -> None:
+    """Remove all pending entries."""
+    _save({})
 
 
 def remove_pending(submission_id: str) -> None:

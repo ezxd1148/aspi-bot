@@ -20,16 +20,50 @@ def fetch_data(api, form_id):
         return None
 
 
-def get_answers(data):
-    """Extract answers from a single submission item.
+def extract_submission(data: dict) -> tuple[str, list[dict]]:
+    """Extract text and file attachments from a submission wrapper.
 
-    `data` is one element from the API response's `submissions` array,
-    with `responses` directly on it.
+    Handles both flat list-endpoint format and nested single-endpoint format.
+
+    Returns (text, files) where each file dict has: name, url, mime_type.
     """
-    responses = data.get("responses", [])
-    for res in responses:
-        answer = res.get("answer", "")
-        if answer:
-            return answer
+    # Try to find the responses array across possible nesting levels
+    responses = data.get("responses") or data.get("submission", {}).get("responses", [])
 
-    return "No text found."
+    text = ""
+    files: list[dict] = []
+
+    for res in responses:
+        answer = res.get("answer")
+        if not answer:
+            continue
+
+        if isinstance(answer, list):
+            # FILE_UPLOAD: answer is a list of file objects
+            for f in answer:
+                files.append(
+                    {
+                        "name": f.get("name", "unnamed"),
+                        "url": f.get("url", ""),
+                        "mime_type": f.get("mimeType", "application/octet-stream"),
+                    }
+                )
+        elif isinstance(answer, str) and answer.strip():
+            text = answer
+
+    # Fallback: list endpoint flat format (answer directly on the item)
+    if not text and not files:
+        direct = data.get("answer")
+        if isinstance(direct, str):
+            text = direct
+        elif isinstance(direct, list):
+            for f in direct:
+                files.append(
+                    {
+                        "name": f.get("name", "unnamed"),
+                        "url": f.get("url", ""),
+                        "mime_type": f.get("mimeType", "application/octet-stream"),
+                    }
+                )
+
+    return text, files

@@ -38,6 +38,11 @@ def mark_processed(submission_id: str) -> None:
     save_processed(ids)
 
 
+def reset() -> None:
+    """Clear all processed IDs."""
+    save_processed(set())
+
+
 def is_processed(submission_id: str) -> bool:
     """Check whether a submission ID has already been processed."""
     return submission_id in load_processed()

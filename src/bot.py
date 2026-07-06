@@ -5,11 +5,19 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaDocument,
+    InputMediaPhoto,
+    Update,
+)
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 import lib.fetch_form
+import lib.moderation
 import lib.pending
+import lib.tally_admin
 import lib.tracker
 
 # ── Environment ───────────────────────────────────────────────────────────────
@@ -35,6 +43,99 @@ if missing:
     print(f"Missing environment variables: {', '.join(missing)}")
     sys.exit(1)
 
+MAX_MEDIA_PER_GROUP = 10
+IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp"}
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _split_files(files: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split file list into (images, documents) based on mime type."""
+    images, docs = [], []
+    for f in files:
+        if f.get("mime_type", "") in IMAGE_MIME_TYPES:
+            images.append(f)
+        else:
+            docs.append(f)
+    return images, docs
+
+
+async def _send_files(
+    bot, chat_id: str, files: list[dict], reply_to: int | None = None
+) -> None:
+    """Send file attachments below the DM — photos render inline, docs as files."""
+    if not files:
+        return
+
+    images, docs = _split_files(files)
+
+    # Photos: InputMediaPhoto renders as full inline images
+    for i in range(0, len(images), MAX_MEDIA_PER_GROUP):
+        chunk = images[i : i + MAX_MEDIA_PER_GROUP]
+        media = [InputMediaPhoto(media=f["url"]) for f in chunk]
+        try:
+            await bot.send_media_group(
+                chat_id=chat_id, media=media, reply_to_message_id=reply_to
+            )
+        except Exception as e:
+            print(f"Failed to send images: {e}")
+
+    # Docs: InputMediaDocument for non-image files
+    for i in range(0, len(docs), MAX_MEDIA_PER_GROUP):
+        chunk = docs[i : i + MAX_MEDIA_PER_GROUP]
+        media = [InputMediaDocument(media=f["url"]) for f in chunk]
+        if len(chunk) == 1:
+            media[0].caption = chunk[0]["name"]
+        try:
+            await bot.send_media_group(
+                chat_id=chat_id, media=media, reply_to_message_id=reply_to
+            )
+        except Exception as e:
+            print(f"Failed to send docs: {e}")
+
+
+async def _broadcast(bot, text: str, files: list[dict]) -> None:
+    """Send confession to channel, combining text and files into one post."""
+    images, docs = _split_files(files)
+
+    sent_anything = False
+
+    # Photos: send as photo group with confession text as caption
+    if images:
+        for i in range(0, len(images), MAX_MEDIA_PER_GROUP):
+            chunk = images[i : i + MAX_MEDIA_PER_GROUP]
+            media = []
+            for j, f in enumerate(chunk):
+                cap = (
+                    text if (i == 0 and j == 0 and not sent_anything and text) else None
+                )
+                media.append(InputMediaPhoto(media=f["url"], caption=cap))
+            try:
+                await bot.send_media_group(chat_id=TELEGRAM_CHANNEL_ID, media=media)
+                sent_anything = True
+            except Exception as e:
+                print(f"Failed to broadcast images: {e}")
+
+    # Docs: send text first (if not already captioned), then files
+    if docs:
+        if text and not sent_anything:
+            await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=text)
+            sent_anything = True
+        for i in range(0, len(docs), MAX_MEDIA_PER_GROUP):
+            chunk = docs[i : i + MAX_MEDIA_PER_GROUP]
+            media = [InputMediaDocument(media=f["url"]) for f in chunk]
+            if len(chunk) == 1:
+                media[0].caption = chunk[0]["name"]
+            try:
+                await bot.send_media_group(chat_id=TELEGRAM_CHANNEL_ID, media=media)
+            except Exception as e:
+                print(f"Failed to broadcast docs: {e}")
+
+    # Text-only: plain message
+    if text and not sent_anything:
+        await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=text)
+
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -52,7 +153,6 @@ async def check_tally(context) -> None:
     """JobQueue callback: poll Tally for new submissions, DM admin."""
     loop = asyncio.get_running_loop()
 
-    # fetch_data is blocking (uses requests), so run in thread
     data = await loop.run_in_executor(
         None, lib.fetch_form.fetch_data, TALLY_API_KEY, FORM_ID
     )
@@ -66,11 +166,23 @@ async def check_tally(context) -> None:
         if not sid or lib.tracker.is_processed(sid):
             continue
 
-        answer = lib.fetch_form.get_answers(sub)
-        if answer == "No text found.":
+        text, files = lib.fetch_form.extract_submission(sub)
+        if not text and not files:
             lib.tracker.mark_processed(sid)
             continue
 
+        # ── AI moderation ──
+        if text:
+            result = await loop.run_in_executor(
+                None, lib.moderation.moderate_text, text
+            )
+            if result == "clean":
+                await _broadcast(context.bot, text, files)
+                lib.tracker.mark_processed(sid)
+                print(f"  Auto-approved: {text[:60]}...")
+                continue
+
+        # ── Manual review (flagged or files-only) ──
         keyboard = InlineKeyboardMarkup(
             [
                 [
@@ -80,19 +192,31 @@ async def check_tally(context) -> None:
             ]
         )
 
+        dm_text = (
+            f"📩 <b>New confession:</b>\n\n{text}"
+            if text
+            else "📩 <b>New confession (files only):</b>"
+        )
+        if files:
+            names = "\n".join(f"📎 {f['name']}" for f in files)
+            dm_text += f"\n\n<b>Attachments:</b>\n{names}"
+
         try:
-            await context.bot.send_message(
+            msg = await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
-                text=f"📩 <b>New confession:</b>\n\n{answer}",
+                text=dm_text,
                 parse_mode="HTML",
                 reply_markup=keyboard,
             )
+            await _send_files(
+                context.bot, ADMIN_CHAT_ID, files, reply_to=msg.message_id
+            )
+
             lib.tracker.mark_processed(sid)
-            lib.pending.save_pending(sid, answer)
-            print(f"Notified admin: {answer[:60]}...")
+            lib.pending.save_pending(sid, text, files)
+            print(f"Notified admin: {text[:60] if text else '(files only)'}...")
         except Exception as e:
             print(f"Failed to DM admin: {e}")
-            # Don't mark as processed — will retry next poll
 
 
 async def button_handler(update: Update, context) -> None:
@@ -102,33 +226,51 @@ async def button_handler(update: Update, context) -> None:
 
     action, sid = query.data.split("_", 1)
 
-    text = lib.pending.get_pending(sid)
-    if text is None:
+    pending = lib.pending.get_pending(sid)
+    if pending is None:
         await query.edit_message_text("⚠️ Submission no longer available.")
         return
 
+    text = pending["text"]
+    files = pending["files"]
+
     if action == "ok":
         try:
-            await context.bot.send_message(
-                chat_id=TELEGRAM_CHANNEL_ID,
-                text=text,
-            )
-            await query.edit_message_text(
-                f"✅ <b>Approved &amp; sent:</b>\n\n{text}",
-                parse_mode="HTML",
-            )
-            print(f"Approved: {text[:60]}...")
+            await _broadcast(context.bot, text, files)
+
+            label = "✅ <b>Approved &amp; sent</b>"
+            if text:
+                label += f":\n\n{text}"
+            await query.edit_message_text(label, parse_mode="HTML")
+            print(f"Approved: {text[:60] if text else '(files only)'}...")
         except Exception as e:
             await query.edit_message_text(f"❌ Failed to send to channel: {e}")
             return
     else:
-        await query.edit_message_text(
-            f"❌ <b>Rejected:</b>\n\n{text}",
-            parse_mode="HTML",
-        )
-        print(f"Rejected: {text[:60]}...")
+        label = "❌ <b>Rejected</b>"
+        if text:
+            label += f":\n\n{text}"
+        await query.edit_message_text(label, parse_mode="HTML")
+        print(f"Rejected: {text[:60] if text else '(files only)'}...")
 
     lib.pending.remove_pending(sid)
+
+
+async def daily_reset(context) -> None:
+    """Reset Tally submissions and local state every 24 hours."""
+    print("=== Daily reset starting ===")
+    loop = asyncio.get_running_loop()
+
+    # Clear Tally submissions
+    await loop.run_in_executor(
+        None, lib.tally_admin.delete_all_submissions, TALLY_API_KEY, FORM_ID
+    )
+
+    # Clear local state
+    lib.tracker.reset()
+    lib.pending.clear_all()
+
+    print("=== Daily reset complete ===")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -141,6 +283,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(button_handler))
 
     app.job_queue.run_repeating(check_tally, interval=POLL_INTERVAL, first=5)
+    app.job_queue.run_repeating(daily_reset, interval=86400, first=60)
 
     print(f"Bot running. Polling Tally every {POLL_INTERVAL}s.")
     print(f"Admin chat: {ADMIN_CHAT_ID}, Channel: {TELEGRAM_CHANNEL_ID}")
