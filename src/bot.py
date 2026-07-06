@@ -3,6 +3,7 @@
 import asyncio
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from telegram import (
@@ -283,7 +284,18 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(button_handler))
 
     app.job_queue.run_repeating(check_tally, interval=POLL_INTERVAL, first=5)
-    app.job_queue.run_repeating(daily_reset, interval=86400, first=60)
+
+    # Daily reset: schedule at a fixed hour (default 03:00), not relative to startup
+    reset_hour = int(os.getenv("RESET_HOUR", "3"))
+    now = datetime.now()
+    reset_time = now.replace(hour=reset_hour, minute=0, second=0, microsecond=0)
+    if reset_time <= now:
+        reset_time += timedelta(days=1)
+    first_delay = (reset_time - now).total_seconds()
+    app.job_queue.run_repeating(daily_reset, interval=86400, first=first_delay)
+    print(
+        f"Daily reset scheduled at {reset_hour:02d}:00 (in {first_delay / 3600:.1f}h)."
+    )
 
     print(f"Bot running. Polling Tally every {POLL_INTERVAL}s.")
     print(f"Admin chat: {ADMIN_CHAT_ID}, Channel: {TELEGRAM_CHANNEL_ID}")

@@ -7,14 +7,8 @@ import os
 
 import requests
 
-# API configurations in priority order
+# API configurations in priority order (free APIs first, paid last)
 APIS = [
-    {
-        "name": "deepseek",
-        "url": "https://api.deepseek.com/v1/chat/completions",
-        "key_env": "DEEPSEEK_API_KEY",
-        "model": "deepseek-v4-flash",
-    },
     {
         "name": "openrouter",
         "url": "https://openrouter.ai/api/v1/chat/completions",
@@ -31,6 +25,12 @@ APIS = [
         "key_env": "NVIDIA_API_KEY",
         "model": "z-ai/glm-5.2",
     },
+    {
+        "name": "deepseek",
+        "url": "https://api.deepseek.com/v1/chat/completions",
+        "key_env": "DEEPSEEK_API_KEY",
+        "model": "deepseek-v4-flash",
+    },
 ]
 
 SYSTEM_PROMPT = (
@@ -41,6 +41,7 @@ SYSTEM_PROMPT = (
     "If the text is short, vague, or ambiguous, default to CLEAN. "
     "If you are not sure about the text respond with FLAGGED"
     "Only flag content that clearly contains or strongly suggests harm.\n\n"
+    "If text contains curse words of any kind respond FLAGGED"
     "Respond with ONLY the word CLEAN or the word FLAGGED. "
     "Do NOT include any other text, explanation, punctuation, or whitespace."
 )
