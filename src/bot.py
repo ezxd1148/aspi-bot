@@ -20,6 +20,7 @@ import lib.moderation
 import lib.pending
 import lib.tally_admin
 import lib.tracker
+import lib.web_server
 
 # ── Environment ───────────────────────────────────────────────────────────────
 
@@ -296,6 +297,8 @@ def main() -> None:
     print(
         f"Daily reset scheduled at {reset_hour:02d}:00 (in {first_delay / 3600:.1f}h)."
     )
+
+    lib.web_server.start()
 
     print(f"Bot running. Polling Tally every {POLL_INTERVAL}s.")
     print(f"Admin chat: {ADMIN_CHAT_ID}, Channel: {TELEGRAM_CHANNEL_ID}")
