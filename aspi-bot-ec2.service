@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=ezxd1148
+User=ubuntu
 WorkingDirectory=/home/ubuntu/aspi-bot
 ExecStart=/home/ubuntu/aspi-bot/.venv/bin/python src/bot.py
 Restart=on-failure
