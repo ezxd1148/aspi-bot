@@ -1,9 +1,10 @@
 import json
 import os
 
-PENDING_FILE = os.path.join(
-    os.path.dirname(__file__), "..", "..", "data", "pending.json"
+DATA_DIR = os.getenv("DATA_DIR") or os.path.join(
+    os.path.dirname(__file__), "..", "..", "data"
 )
+PENDING_FILE = os.path.join(DATA_DIR, "pending.json")
 
 
 def _ensure_data_dir() -> str:
@@ -18,7 +19,7 @@ def _load() -> dict:
     with open(path, "r") as f:
         try:
             return json.load(f)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return {}
 
 

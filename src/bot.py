@@ -308,8 +308,29 @@ async def daily_reset(context) -> None:
 async def _error_handler(update: object, context) -> None:
     """Log errors cleanly — suppresses noisy tracebacks for transient network issues."""
     err = context.error
-    # httpx.ReadError / NetworkError are transient — Telegram polling retries automatically
     print(f"Non-critical error: {type(err).__name__}: {err}")
+
+
+def _seed_tracker() -> None:
+    """If the tracker is empty (e.g. data dir was wiped), pre-populate it
+    with all existing Tally submission IDs so nothing gets re-sent."""
+    if lib.tracker.load_processed():
+        return  # already have state, nothing to do
+
+    print("Tracker is empty — seeding with existing Tally submissions...")
+    data = lib.fetch_form.fetch_data(TALLY_API_KEY, FORM_ID)
+    if not data:
+        print("  Could not fetch Tally data, will try again on first poll.")
+        return
+
+    count = 0
+    for sub in data.get("submissions", []):
+        sid = sub.get("id")
+        if sid:
+            lib.tracker.mark_processed(sid)
+            count += 1
+
+    print(f"  Seeded {count} existing submissions — nothing will re-send.")
 
 
 def main() -> None:
@@ -326,6 +347,9 @@ def main() -> None:
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_error_handler(_error_handler)
+
+    # ── Startup guard: seed tracker so vanished state doesn't cause re-sends ──
+    _seed_tracker()
 
     app.job_queue.run_repeating(check_tally, interval=POLL_INTERVAL, first=5)
 

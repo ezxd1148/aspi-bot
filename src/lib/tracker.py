@@ -1,9 +1,10 @@
 import json
 import os
 
-TRACKER_FILE = os.path.join(
-    os.path.dirname(__file__), "..", "..", "data", "processed_ids.json"
+DATA_DIR = os.getenv("DATA_DIR") or os.path.join(
+    os.path.dirname(__file__), "..", "..", "data"
 )
+TRACKER_FILE = os.path.join(DATA_DIR, "processed_ids.json")
 
 
 def _ensure_data_dir() -> str:
@@ -20,7 +21,7 @@ def load_processed() -> set[str]:
     with open(path, "r") as f:
         try:
             return set(json.load(f))
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return set()
 
 
