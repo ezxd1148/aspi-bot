@@ -151,6 +151,25 @@ async def start_command(update: Update, context) -> None:
     )
 
 
+async def reset_command(update: Update, context) -> None:
+    """Admin-only: clear all local state and Tally submissions."""
+    if str(update.effective_chat.id) != ADMIN_CHAT_ID:
+        await update.message.reply_text("⛔ Admin only.")
+        return
+
+    loop = asyncio.get_running_loop()
+    await update.message.reply_text("🔄 Clearing Tally submissions...")
+
+    await loop.run_in_executor(
+        None, lib.tally_admin.delete_all_submissions, TALLY_API_KEY, FORM_ID
+    )
+
+    lib.tracker.reset()
+    lib.pending.clear_all()
+
+    await update.message.reply_text("✅ All cleared — tracker, pending, and Tally.")
+
+
 async def check_tally(context) -> None:
     """JobQueue callback: poll Tally for new submissions, DM admin."""
     loop = asyncio.get_running_loop()
@@ -304,6 +323,7 @@ def main() -> None:
     )
 
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_error_handler(_error_handler)
 
