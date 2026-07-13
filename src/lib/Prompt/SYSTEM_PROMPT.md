@@ -62,6 +62,5 @@ Flag ANY submission that contains these words/sentence. Don't ask why, admin kno
 - "RAWRRRRRR"
 
 ## Edge cases log
-2026-07-13 - Hate Speech/Racism - Put inside Racism/Hate speech - """tidur ke study -mengaji -tapi saya non-muslim -indian ke negro"""
-
+2026-07-13 - While replying to a recent submission, racism is detected as people are comparing if the anonymous submittor is an indian/negro. Admin worked fast - added to "Racism / Hate Speech"
 -- Continue here --
