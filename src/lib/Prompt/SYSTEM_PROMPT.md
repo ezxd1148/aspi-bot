@@ -15,6 +15,16 @@ Examples:
 
 - "Savi is gay"
 
+### FLAG -- Racism / Hate speech
+Definition: targeted hate speech towards a certain groups/people
+
+Note:
+Flag words that represent a race e.g indian, negro, chinese, melayu 
+
+Examples:
+
+- """tidur ke study -mengaji -tapi saya non-muslim -indian ke negro"""
+
 ### FLAG -- Excessive curse word
 Definition: usage of curse word that is considered overnegative
 
@@ -52,4 +62,6 @@ Flag ANY submission that contains these words/sentence. Don't ask why, admin kno
 - "RAWRRRRRR"
 
 ## Edge cases log
-- None yet
+2026-07-13 - Hate Speech/Racism - Put inside Racism/Hate speech - """tidur ke study -mengaji -tapi saya non-muslim -indian ke negro"""
+
+-- Continue here --
