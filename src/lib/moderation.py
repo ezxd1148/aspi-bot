@@ -3,7 +3,9 @@
 Rotates through available APIs automatically on failure.
 """
 
+import json
 import os
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -43,17 +45,8 @@ APIS = [
 ]
 
 SYSTEM_PROMPT = (
-    "You are inside a Malaysian Broadcast Group for ASASIpintar Confession Broadcast Channel."
-    "You are a content moderation filter. Analyze this anonymous confession "
-    "for harmful or inappropriate content: violence, hate speech, self-harm, "
-    "explicit sexual content, harassment, threats, or illegal activity.\n\n"
-    "If the text is short, vague, or ambiguous, default to CLEAN. "
-    "If you are not sure about the text respond with FLAGGED"
-    "Only flag content that clearly contains or strongly suggests harm.\n\n"
-    "If text contains curse words of any kind respond FLAGGED"
-    "Respond with ONLY the word CLEAN or the word FLAGGED. "
-    "Do NOT include any other text, explanation, punctuation, or whitespace."
-)
+    Path(__file__).parent / "Prompt" / "SYSTEM_PROMPT.md"
+).read_text()
 
 
 def moderate_text(text: str) -> str:
@@ -124,8 +117,6 @@ def moderate_text(text: str) -> str:
 
                 # Debug: log full response on empty/unexpected
                 if not reply or ("CLEAN" not in reply and "FLAGGED" not in reply):
-                    import json
-
                     print(
                         f"  AI ({api['name']}) raw response: {json.dumps(data, indent=2)[:500]}"
                     )
