@@ -65,5 +65,6 @@ Flag ANY submission that contains these words/sentence. Don't ask why, admin kno
 
 ## Edge cases log
 2026-07-13 - While replying to a recent submission, racism is detected as people are comparing if the anonymous submittor is an indian/negro. Admin worked fast - added to "Racism / Hate Speech"
+
 2026-07-14 - Students are using the keyword "Okay", "Ok", repetitively to disrespect our lecturer that are using "Ok" as her filler word. - Added to "Admin rules"
 -- Continue here --
