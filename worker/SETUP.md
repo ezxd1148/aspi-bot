@@ -12,6 +12,16 @@
 
 The moderation chain is production-ready. The webhook handler, lock system, and Telegram integration will be built in future plans.
 
+## ⚠️ Use test credentials only
+
+This Worker is in early development. When configuring Telegram:
+
+- **Create a separate test bot** via [@BotFather](https://t.me/BotFather) — do NOT use the production @asasipintarconfess bot token
+- **Use a test channel/group** — do NOT point at the real confession channel
+- **Use your own chat ID** for `ADMIN_CHAT_ID`
+
+There is no risk of accidentally posting to production right now (Telegram isn't wired up yet), but set test values from the start so nothing leaks later.
+
 ---
 
 ## Step 1: Prerequisites
@@ -40,6 +50,12 @@ You only need ONE provider configured for the bot to work. More providers = more
 From the `worker/` directory, run these for each provider you're using:
 
 ```bash
+# === Telegram (TEST credentials only!) ===
+wrangler secret put TELEGRAM_BOT_TOKEN     # Create a test bot via @BotFather
+wrangler secret put TELEGRAM_CHANNEL_ID    # e.g. @test_confessions_channel
+wrangler secret put ADMIN_CHAT_ID          # Your personal chat ID (get from @userinfobot)
+
+# === AI Moderation ===
 # Cloudflare Workers AI (requires account ID + API token)
 wrangler secret put CF_ACCOUNT_ID     # Found at: dash.cloudflare.com → your account → copy Account ID
 wrangler secret put CF_API_TOKEN      # Create at: dash.cloudflare.com → API Tokens → Create Token → "Workers AI" template
@@ -61,6 +77,15 @@ Verify secrets are set:
 ```bash
 wrangler secret list
 ```
+
+### Local development (optional)
+
+Copy `.dev.vars.example` to `.dev.vars` and fill in test values:
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+Then `wrangler dev` will load those values locally. `.dev.vars` is gitignored.
 
 ---
 

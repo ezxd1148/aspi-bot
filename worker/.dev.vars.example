@@ -1,0 +1,25 @@
+# Copy to .dev.vars for local development (wrangler dev).
+# Use TEST credentials only — never put production values here.
+# .dev.vars is gitignored.
+
+# === TEST Telegram bot (create via @BotFather) ===
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234ghijk
+TELEGRAM_CHANNEL_ID=@test_confessions_channel
+ADMIN_CHAT_ID=123456789
+
+# === AI Moderation (at least one required) ===
+# Cloudflare Workers AI — same account as the Worker
+CF_ACCOUNT_ID=abc123
+CF_API_TOKEN=xyz789
+
+# Groq — https://console.groq.com
+GROQ_API_KEY=gsk_test_...
+
+# Google AI Studio — https://aistudio.google.com/apikey
+GOOGLE_AI_API_KEY=AIza...
+
+# OpenRouter — https://openrouter.ai/keys
+OPENROUTER_API_KEY=sk-or-v1-...
+
+# NVIDIA NIM — https://build.nvidia.com
+NVIDIA_API_KEY=nvapi-...

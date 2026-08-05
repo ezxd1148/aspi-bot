@@ -8,7 +8,11 @@ import { getProviders, ModerationEnv } from './moderation/providers';
 import systemPrompt from './moderation/SYSTEM_PROMPT.md';
 
 export interface Env extends ModerationEnv {
-  // Future: TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, ADMIN_CHAT_ID, etc.
+  // Telegram — use a TEST bot and TEST group/channel during development.
+  // Never point these at the production @asasipintarconfess bot or channel.
+  TELEGRAM_BOT_TOKEN?: string;    // From @BotFather — create a test bot
+  TELEGRAM_CHANNEL_ID?: string;   // e.g. @test_confessions_channel
+  ADMIN_CHAT_ID?: string;         // Your personal Telegram chat ID for review DMs
   // Future: STATE R2 bucket binding
 }
 
