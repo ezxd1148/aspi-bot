@@ -1,0 +1,11 @@
+name = "aspi-bot"
+main = "src/index.ts"
+compatibility_date = "2025-08-05"
+
+# R2 binding for lock storage (used by future tasks, not this plan)
+# [[r2_buckets]]
+# binding = "STATE"
+# bucket_name = "aspi-bot-state"
+
+[observability]
+enabled = true
