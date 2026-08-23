@@ -1,0 +1,15 @@
+[Unit]
+Description=aspi-bot — confession batch bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ezxd1148
+WorkingDirectory=/home/ezxd1148/Projects/Python/aspi-bot
+ExecStart=/home/ezxd1148/Projects/Python/aspi-bot/.venv/bin/python src/bot.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
