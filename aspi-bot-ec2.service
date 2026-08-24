@@ -1,15 +1,30 @@
 [Unit]
-Description=aspi-bot — confession batch bot
+Description=aspi-bot — polls Tally, DMs admin for review, broadcasts confessions to Telegram
+Documentation=https://github.com/ezxd1148/aspi-bot
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=ubuntu
+Group=ubuntu
 WorkingDirectory=/home/ubuntu/aspi-bot
+Environment=PATH=/home/ubuntu/aspi-bot/.venv/bin:/usr/bin
 ExecStart=/home/ubuntu/aspi-bot/.venv/bin/python src/bot.py
 Restart=on-failure
 RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/home/ubuntu/aspi-bot/data /home/ubuntu/aspi-bot/.env
+ReadOnlyPaths=/home/ubuntu/aspi-bot/src /home/ubuntu/aspi-bot/.venv
 
 [Install]
 WantedBy=default.target
