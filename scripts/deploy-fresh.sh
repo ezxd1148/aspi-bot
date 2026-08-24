@@ -38,6 +38,7 @@ rsync -az --delete \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
     --exclude 'node_modules' \
+    --exclude '.gitignore' \
     ./ "$HOST:$REMOTE_DIR"
 
 # ── Run remote setup ──

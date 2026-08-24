@@ -17,24 +17,31 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-https://github.com/ezxd1148/aspi-bot.git}"
 BRANCH="${BRANCH:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/home/ubuntu/aspi-bot}"
-SERVICE_USER="${SERVICE_USER:-ubuntu}"
 
 echo "=== aspi-bot EC2 setup ==="
 echo "  Install dir: $INSTALL_DIR"
-echo "  Branch:      $BRANCH"
 
 # ── 1. System deps ────────────────────────────────────────────────────────────
 echo "--- Installing system packages ---"
 sudo apt-get update -qq
 sudo apt-get install -y -qq git python3 python3-pip python3-venv
 
-# ── 2. Clone / pull ───────────────────────────────────────────────────────────
-if [ -d "$INSTALL_DIR" ]; then
-    echo "--- Updating existing clone ---"
+# ── 2. Code ──────────────────────────────────────────────────────────────────
+# Three scenarios:
+#   A) rsync deploy (files exist, no .git)  → skip git, already up to date
+#   B) fresh install (nothing exists)        → git clone
+#   C) git pull (has .git)                   → git pull
+
+if [ -d "$INSTALL_DIR/.git" ]; then
+    echo "--- Git repo found — pulling latest ---"
     cd "$INSTALL_DIR"
     git pull
+elif [ -d "$INSTALL_DIR" ]; then
+    # rsync deploy — files already there, no git needed
+    echo "--- Files found (rsync deploy) — skipping git ---"
+    cd "$INSTALL_DIR"
 else
-    echo "--- Cloning repository ---"
+    echo "--- Cloning repository ($BRANCH) ---"
     git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
     cd "$INSTALL_DIR"
 fi
