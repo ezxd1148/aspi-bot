@@ -6,6 +6,7 @@ Rotates through available APIs automatically on failure.
 import json
 import os
 from pathlib import Path
+from time import monotonic
 
 import requests
 from dotenv import load_dotenv
@@ -18,7 +19,7 @@ APIS = [
         "name": "openrouter",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "key_env": "OPENROUTER_API_KEY",
-        "model": "poolside/laguna-xs-2.1:free",  # free tier
+        "model": "openrouter/free",  # free tier
         "timeout": 15,
         "extra_body": {"reasoning_effort": "none"},
         "extra_headers": {
@@ -48,6 +49,36 @@ SYSTEM_PROMPT = (
    Path(__file__).parent / "Prompt" / "SYSTEM_PROMPT.md"
 ).read_text()
 
+
+def _request_moderation(api: dict, text: str, key: str):
+    """Use the same prompt, model, and request settings for moderation and probes."""
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    headers.update(api.get("extra_headers", {}))
+
+    payload = {
+        "model": api["model"],
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f"Classify as CLEAN or FLAGGED. Reply with only that word:\n\n{text}",
+            },
+        ],
+        "max_tokens": 500,
+        "temperature": 0.1,
+        **api.get("extra_body", {}),
+    }
+
+    return requests.post(
+        api["url"],
+        headers=headers,
+        json=payload,
+        timeout=api.get("timeout", 30),
+    )
+
 def moderate_text(text: str) -> str:
     """Check text with AI moderation.
 
@@ -61,33 +92,8 @@ def moderate_text(text: str) -> str:
         if not key:
             continue
 
-        headers = {
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        }
-        headers.update(api.get("extra_headers", {}))
-
-        payload = {
-            "model": api["model"],
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"Classify as CLEAN or FLAGGED. Reply with only that word:\n\n{text}",
-                },
-            ],
-            "max_tokens": 500,
-            "temperature": 0.1,
-            **api.get("extra_body", {}),
-        }
-
         try:
-            resp = requests.post(
-                api["url"],
-                headers=headers,
-                json=payload,
-                timeout=api.get("timeout", 30),
-            )
+            resp = _request_moderation(api, text, key)
 
             if resp.status_code == 200:
                 data = resp.json()
@@ -143,3 +149,51 @@ def moderate_text(text: str) -> str:
 
     print("  All AI APIs exhausted — flagging for manual review")
     return "error"
+
+
+def test_provider(api: dict) -> str:
+    """Probe one provider without fallback or publishing any submissions."""
+    key = os.getenv(api["key_env"])
+    if not key:
+        return f"SKIPPED - missing {api['key_env']}"
+
+    started = monotonic()
+    checks = []
+    for text, expected in [
+        ("Stress wei chem ni", "CLEAN"),
+        ("Dia g#y, gurau je", "FLAGGED"),
+    ]:
+        try:
+            resp = _request_moderation(api, text, key)
+            if resp.status_code != 200:
+                reasons = {
+                    401: "authentication failed",
+                    403: "access denied",
+                    402: "no credits",
+                    429: "rate limited",
+                }
+                reason = reasons.get(resp.status_code, "API error")
+                checks.append(f"{expected}: FAIL - HTTP {resp.status_code} ({reason})")
+                break
+            data = resp.json()
+            reply = data["choices"][0]["message"].get("content") or ""
+            if not isinstance(reply, str):
+                raise ValueError("Invalid content type")
+            # Require the actual final answer, not a classification guessed from reasoning.
+            answer = reply.strip()
+            if answer == expected:
+                checks.append(f"{expected}: PASS")
+            elif answer in ("CLEAN", "FLAGGED"):
+                checks.append(f"{expected}: FAIL - returned {answer}")
+            else:
+                checks.append(f"{expected}: FAIL - invalid or empty reply")
+        except requests.Timeout:
+            checks.append(f"{expected}: FAIL - timed out")
+            break
+        except requests.RequestException:
+            checks.append(f"{expected}: FAIL - connection/request error")
+            break
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            checks.append(f"{expected}: FAIL - malformed response")
+
+    return "; ".join(checks) + f" ({monotonic() - started:.1f}s)"

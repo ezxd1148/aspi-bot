@@ -151,6 +151,35 @@ async def start_command(update: Update, context) -> None:
     )
 
 
+async def testbots_command(update: Update, context) -> None:
+    """Admin-only: test each moderation provider independently."""
+    if str(update.effective_chat.id) != ADMIN_CHAT_ID:
+        await update.message.reply_text("⛔ Admin only.")
+        return
+
+    if context.bot_data.get("provider_test_running"):
+        await update.message.reply_text("A provider test is already running.")
+        return
+
+    context.bot_data["provider_test_running"] = True
+    try:
+        await update.message.reply_text(
+            "Testing each moderation provider with CLEAN and FLAGGED samples. "
+            "This can take about two minutes and uses API quota/credits."
+        )
+        loop = asyncio.get_running_loop()
+        results = await asyncio.gather(*[
+            loop.run_in_executor(None, lib.moderation.test_provider, api)
+            for api in lib.moderation.APIS
+        ])
+        lines = ["Moderation provider test:"]
+        for api, result in zip(lib.moderation.APIS, results):
+            lines.append(f"\n{api['name']} ({api['model']})\n{result}")
+        await update.message.reply_text("\n".join(lines), parse_mode=None)
+    finally:
+        context.bot_data.pop("provider_test_running", None)
+
+
 async def reset_command(update: Update, context) -> None:
     """Admin-only: clear all local state and Tally submissions."""
     if str(update.effective_chat.id) != ADMIN_CHAT_ID:
@@ -345,6 +374,7 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("reset", reset_command))
+    app.add_handler(CommandHandler("testbots", testbots_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_error_handler(_error_handler)
 
