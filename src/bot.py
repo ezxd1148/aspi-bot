@@ -20,7 +20,7 @@ from telegram import (
     Update,
 )
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
-from telegram.error import TelegramError
+from telegram.error import Conflict, TelegramError
 
 import lib.config
 
@@ -238,6 +238,12 @@ async def _validate_review_destination(bot):
     return chat
 
 
+def _admin_identity(user) -> str:
+    name = " ".join(user.full_name.split())
+    username = f" @{user.username}" if user.username else ""
+    return f"{name}{username} (ID: {user.id})"
+
+
 async def status_command(update: Update, context) -> None:
     if not await _is_admin(update, context):
         await update.message.reply_text("⛔ Admin only. Run /start to see the loaded review destination.")
@@ -249,13 +255,47 @@ async def status_command(update: Update, context) -> None:
     except (TelegramError, RuntimeError) as error:
         permission = f"FAIL - {error}" if isinstance(error, RuntimeError) else f"FAIL - Telegram {type(error).__name__}"
         title = "Review destination could not be verified"
-    await update.message.reply_text(
+    requester = update.effective_user
+    requester_role = "Private admin" if update.effective_chat.type == "private" else "Group admin (verified)"
+    admin_lines = []
+    if update.effective_chat.type == "private":
+        admin_lines = ["Detected admins (1):", f"- {_admin_identity(requester)} - Private admin (you)"]
+    else:
+        try:
+            members = await context.bot.get_chat_administrators(chat_id=int(REVIEW_CHAT_ID))
+            admins = sorted(
+                (member for member in members if not member.user.is_bot
+                 and member.status in ("creator", "administrator")),
+                key=lambda member: (member.status != "creator", member.user.full_name.casefold(), member.user.id),
+            )
+            admin_lines.append(f"Detected admins ({len(admins)}):")
+            for member in admins:
+                role = "Owner" if member.status == "creator" else "Administrator"
+                marker = " (you)" if member.user.id == requester.id else ""
+                if marker:
+                    requester_role = role
+                admin_lines.append(f"- {_admin_identity(member.user)} - {role}{marker}")
+            if not admins:
+                admin_lines.append("No human admins returned by Telegram.")
+        except TelegramError as error:
+            admin_lines.append(f"Detected admins: lookup failed (Telegram {type(error).__name__})")
+    report = (
         f"Bot status\nBuild: {BUILD_ID}\nProject: {PROJECT_ROOT}\nConfig file: {lib.config.ENV_FILE}\n"
         f"Review chat: {REVIEW_CHAT_ID} via {REVIEW_CONFIG_KEY}\n{title}\n{permission}\n"
         f"Channel: {TELEGRAM_CHANNEL_ID}\n"
-        f"Commands: {', '.join('/' + name for name, *_ in COMMANDS)}",
-        parse_mode=None,
+        f"Commands: {', '.join('/' + name for name, *_ in COMMANDS)}\n"
+        f"Requested by: {_admin_identity(requester)} - {requester_role}\n"
+        + "\n".join(admin_lines)
     )
+    # Large admin groups can exceed Telegram's message limit; keep every admin visible.
+    page = ""
+    for line in report.splitlines():
+        if len(page) + len(line) + 1 > 3500:
+            await update.message.reply_text(page, parse_mode=None)
+            page = ""
+        page += ("\n" if page else "") + line
+    if page:
+        await update.message.reply_text(page, parse_mode=None)
 
 
 async def unknown_command(update: Update, context) -> None:
@@ -452,6 +492,13 @@ async def button_handler(update: Update, context) -> None:
         print(f"Review {action} by user {update.effective_user.id}: {sid}", flush=True)
 
 
+async def _notify_daily_reset(context, text: str) -> None:
+    try:
+        await context.bot.send_message(chat_id=REVIEW_CHAT_ID, text=text, parse_mode=None)
+    except TelegramError as error:
+        print(f"Daily reset notification failed ({type(error).__name__}).", flush=True)
+
+
 async def daily_reset(context) -> None:
     """Reset Tally submissions and local state every 24 hours."""
     print("=== Daily reset starting ===")
@@ -459,17 +506,29 @@ async def daily_reset(context) -> None:
 
     # Clear Tally submissions
     async with _review_lock(context):
+        await _notify_daily_reset(context, "🔄 Daily reset starting: clearing Tally submissions and local review state.")
         try:
             await loop.run_in_executor(
                 None, lib.tally_admin.delete_all_submissions, TALLY_API_KEY, FORM_ID
             )
         except Exception as error:
             print(f"Daily reset failed ({type(error).__name__}); local review state preserved.", flush=True)
+            await _notify_daily_reset(
+                context, f"❌ Daily Tally reset failed ({type(error).__name__}). Local pending reviews were preserved; check the service logs."
+            )
             return
-        lib.tracker.reset()
-        lib.pending.clear_all()
+        try:
+            lib.tracker.reset()
+            lib.pending.clear_all()
+        except Exception as error:
+            print(f"Daily local state reset failed ({type(error).__name__}).", flush=True)
+            await _notify_daily_reset(
+                context, f"❌ Daily reset failed while clearing local review state ({type(error).__name__}). Tally was cleared; check the service logs."
+            )
+            return
 
     print("=== Daily reset complete ===")
+    await _notify_daily_reset(context, "✅ Daily reset complete: Tally submissions, tracker, and pending reviews cleared.")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -479,6 +538,19 @@ async def _error_handler(update: object, context) -> None:
     """Log errors cleanly — suppresses noisy tracebacks for transient network issues."""
     err = context.error
     print(f"Handler error: {type(err).__name__}", flush=True)
+    if isinstance(err, Conflict):
+        if "webhook" in str(err).lower():
+            print(
+                "Telegram polling/webhook conflict: another deployment is configuring a webhook. "
+                "Stop that deployment before using this polling service.", flush=True,
+            )
+        else:
+            print(
+                "Telegram polling conflict: another process is using this bot token. "
+                "Keep only aspi-bot.service running; check aspi-bot-ec2.service, "
+                "manual Python sessions, local development, and other servers.", flush=True,
+            )
+        return
     if isinstance(update, Update) and update.effective_message:
         try:
             await update.effective_message.reply_text(

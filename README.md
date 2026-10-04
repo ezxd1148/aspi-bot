@@ -32,6 +32,8 @@ regardless of the shell's working directory. Values in that file override inheri
 environment values. Duplicate review-destination entries are rejected. Restart
 after editing the file. `/start` shows the active destination and build fingerprint;
 `/status` additionally shows the checkout/config paths and verifies group access.
+It lists the detected human owner/admins with names, usernames (when available),
+Telegram IDs, and roles, and identifies the admin who requested the status.
 Startup checks the group type, privacy, and bot administrator role before polling.
 Registered handlers and Telegram's command menu come from the same command list.
 
@@ -50,6 +52,17 @@ commands receive a reply, while commands addressed to another bot are ignored.
 Provider test failures are reported individually; a failed Tally reset preserves
 local pending reviews instead of reporting a successful reset. External services,
 permissions, credentials, and duplicate bot processes can still cause live failures.
+
+The scheduled daily reset sends its start and completion (or failure) notifications
+to the configured admin review chat. If Telegram cannot deliver a notification,
+the bot logs that failure and continues the reset.
+
+If logs show `Handler error: Conflict`, another polling process or a competing
+webhook deployment is using the same Telegram token. Keep one polling instance.
+Check both `aspi-bot` and `aspi-bot-ec2` services, manual Python sessions, your
+local development machine, and other servers. Stopping a duplicate process fixes
+this conflict; editing the review group ID does not. The error handler reports
+polling and webhook conflicts separately without logging the token.
 
 Borderline flags receive a short **Review note** explaining the rule/word or
 context that needs human judgment. Obvious violations omit the note. This uses
