@@ -12,11 +12,12 @@ from lib import moderation
 
 
 def load_bot():
+    import lib.config
     with patch.dict(os.environ, {
         'TALLY_API_KEY': 'test-key', 'FORM_ID': 'test-form',
         'TELEGRAM_BOT_TOKEN': '123:test-token', 'TELEGRAM_CHANNEL_ID': '-10099',
         'ADMIN_CHAT_ID': '123', 'DATA_DIR': '/tmp/aspi-bot-test-state',
-    }):
+    }, clear=True), patch.object(lib.config, 'load_environment'):
         return importlib.import_module('bot')
 
 
@@ -184,7 +185,7 @@ class ProviderTests(unittest.TestCase):
 class CommandTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.bot_module = load_bot()
-        admin_id = patch.object(self.bot_module, 'ADMIN_CHAT_ID', '123')
+        admin_id = patch.object(self.bot_module, 'REVIEW_CHAT_ID', '123')
         admin_id.start()
         self.addCleanup(admin_id.stop)
         self.provider = Mock(return_value='CLEAN: PASS; FLAGGED: PASS')

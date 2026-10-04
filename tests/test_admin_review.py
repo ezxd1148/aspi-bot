@@ -10,7 +10,7 @@ from test_provider_checks import load_bot
 class AdminReviewTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.bot = load_bot()
-        config = patch.object(self.bot, 'ADMIN_CHAT_ID', '-100123')
+        config = patch.object(self.bot, 'REVIEW_CHAT_ID', '-100123')
         config.start()
         self.addCleanup(config.stop)
         self.context = SimpleNamespace(bot_data={}, bot=SimpleNamespace(

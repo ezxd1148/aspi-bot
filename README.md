@@ -5,11 +5,11 @@ Shared admin review:
 1. Create a private Telegram group and invite your reviewers and the bot.
 2. Promote the bot and your reviewers to group administrators.
 3. Send `/start@YourBotUsername` in the group to get the group's chat ID.
-4. Set `ADMIN_CHAT_ID` in EC2's `.env` to that group ID, usually a negative number.
+4. Set `ADMIN_GROUP_ID` in EC2's `.env` to that group ID, usually a negative number.
 5. Deploy the updated code and run `sudo systemctl restart aspi-bot`.
 
 Flagged submissions and their attachments go to that group. The group's owner
-and current administrators can approve/reject and run `/testbots` and `/reset`.
+and current administrators can approve/reject and run `/status`, `/testbots`, and `/reset`.
 Ordinary members and people in other chats cannot perform those actions.
 Use `/testbots@YourBotUsername` if several bots are in the group. Send commands
 as yourself rather than as an anonymous administrator. Keep the bot authorized
@@ -21,9 +21,35 @@ Completed review messages name the reviewer and remove the decision buttons.
 Concurrent clicks are serialized, and a failed message edit cannot publish the
 same submission again. Run only one bot process per token. Decisions are not
 transactional across a process crash or a partially completed media broadcast.
-Finish outstanding reviews in the old chat before changing `ADMIN_CHAT_ID`;
+Finish outstanding reviews in the old chat before changing the review destination;
 old review buttons will no longer be authorized once the destination changes.
-A positive private-chat `ADMIN_CHAT_ID` retains single-admin operation.
+A positive private-chat `ADMIN_CHAT_ID` retains single-admin operation only when
+`ADMIN_GROUP_ID` is absent. An explicit group always takes priority, and an invalid
+or inaccessible group stops startup instead of silently falling back to a DM.
+
+Configuration is loaded once from `.env` in this checkout (beside README.md),
+regardless of the shell's working directory. Values in that file override inherited
+environment values. Duplicate review-destination entries are rejected. Restart
+after editing the file. `/start` shows the active destination and build fingerprint;
+`/status` additionally shows the checkout/config paths and verifies group access.
+Startup checks the group type, privacy, and bot administrator role before polling.
+Registered handlers and Telegram's command menu come from the same command list.
+
+Verify the installed configuration on EC2 without starting another polling process:
+
+```bash
+cd /home/ubuntu/aspi-bot
+.venv/bin/python src/bot.py --check-config
+sudo systemctl restart aspi-bot
+sudo journalctl -u aspi-bot -n 30 --no-pager
+```
+
+Then run `/status@YourBotUsername` in the review group. Compare its build and
+destination to the command-line output. `/help` lists every command. Unknown
+commands receive a reply, while commands addressed to another bot are ignored.
+Provider test failures are reported individually; a failed Tally reset preserves
+local pending reviews instead of reporting a successful reset. External services,
+permissions, credentials, and duplicate bot processes can still cause live failures.
 
 Borderline flags receive a short **Review note** explaining the rule/word or
 context that needs human judgment. Obvious violations omit the note. This uses
@@ -34,7 +60,7 @@ advisory and may be wrong; only the classification controls automatic posting.
 
 Admin command: `/testbots` tests OpenRouter, Groq, NVIDIA, and DeepSeek separately
 using the loaded moderation prompt and configured models. Run it in the chat
-configured by `ADMIN_CHAT_ID` after restarting the bot with the updated code.
+configured by `ADMIN_GROUP_ID` (or legacy `ADMIN_CHAT_ID`) after restarting the bot.
 
 Each configured provider receives a harmless sample (expected `CLEAN`) and a
 disguised restricted-topic sample (expected `FLAGGED`). Results show each check,

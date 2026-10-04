@@ -18,10 +18,9 @@ def delete_all_submissions(api_key: str, form_id: str) -> int:
 
     while True:
         params = {"page": page, "limit": limit}
-        resp = requests.get(base_url, headers=headers, params=params)
+        resp = requests.get(base_url, headers=headers, params=params, timeout=30)
         if resp.status_code != 200:
-            print(f"Tally fetch failed during reset: {resp.status_code}")
-            break
+            raise RuntimeError(f"Tally reset listing failed: HTTP {resp.status_code}")
 
         data = resp.json()
         submissions = data.get("submissions", [])
@@ -42,11 +41,11 @@ def delete_all_submissions(api_key: str, form_id: str) -> int:
     deleted = 0
     for sid in all_ids:
         del_url = f"{base_url}/{sid}"
-        resp = requests.delete(del_url, headers=headers)
+        resp = requests.delete(del_url, headers=headers, timeout=30)
         if resp.status_code in (200, 204):
             deleted += 1
         else:
-            print(f"  Failed to delete {sid}: {resp.status_code}")
+            raise RuntimeError(f"Tally reset deletion failed: HTTP {resp.status_code}; {deleted} deleted so far")
 
     print(f"Deleted {deleted}/{len(all_ids)} submissions from Tally.")
     return deleted
