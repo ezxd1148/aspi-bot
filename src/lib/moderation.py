@@ -40,7 +40,7 @@ APIS = [
         "name": "nvidia",
         "url": "https://integrate.api.nvidia.com/v1/chat/completions",
         "key_env": "NVIDIA_API_KEY",
-        "model": "mistralai/mistral-medium-3.5-128b",
+        "model": "z-ai/glm-5.3-flash",
         "timeout": 60,  # cold starts on large models can take 20-30s
         "extra_body": {"reasoning_effort": "none"},
     },
