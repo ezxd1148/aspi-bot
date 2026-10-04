@@ -1,9 +1,10 @@
-"""aspi-bot — polls Tally, DMs admin for manual review, then broadcasts."""
+"""aspi-bot — polls Tally, sends submissions for admin review, then broadcasts."""
 
 import asyncio
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from html import escape
 
 from dotenv import load_dotenv
 from telegram import (
@@ -14,6 +15,7 @@ from telegram import (
     Update,
 )
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
+from telegram.error import TelegramError
 
 import lib.fetch_form
 import lib.moderation
@@ -50,6 +52,32 @@ IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp", "image
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+async def _is_admin(update: Update, context) -> bool:
+    """Authorize a private admin, or the configured review group's real admins."""
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat is None or user is None or str(chat.id) != ADMIN_CHAT_ID or user.is_bot:
+        return False
+    if chat.type == "private":
+        return str(user.id) == ADMIN_CHAT_ID
+    if chat.type not in ("group", "supergroup"):
+        return False
+    # Anonymous/channel-authored commands do not identify the requesting admin.
+    if update.message and update.message.sender_chat is not None:
+        return False
+    try:
+        member = await context.bot.get_chat_member(chat_id=chat.id, user_id=user.id)
+    except TelegramError as error:
+        print(f"Could not verify admin membership: {type(error).__name__}", flush=True)
+        return False
+    return member.status in ("creator", "administrator")
+
+
+def _review_lock(context) -> asyncio.Lock:
+    """Serialize decisions and resets within the single running bot process."""
+    return context.bot_data.setdefault("review_lock", asyncio.Lock())
 
 
 def _split_files(files: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -118,6 +146,7 @@ async def _broadcast(bot, text: str, files: list[dict]) -> None:
                 sent_anything = True
             except Exception as e:
                 print(f"Failed to broadcast images: {e}")
+                raise
 
     # Docs: send text first (if not already captioned), then files
     if docs:
@@ -133,6 +162,7 @@ async def _broadcast(bot, text: str, files: list[dict]) -> None:
                 await bot.send_media_group(chat_id=TELEGRAM_CHANNEL_ID, media=media)
             except Exception as e:
                 print(f"Failed to broadcast docs: {e}")
+                raise
 
     # Text-only: plain message
     if text and not sent_anything:
@@ -145,15 +175,19 @@ async def _broadcast(bot, text: str, files: list[dict]) -> None:
 async def start_command(update: Update, context) -> None:
     """Show the user their chat ID (for .env setup)."""
     await update.message.reply_text(
-        f"👋 Your chat ID is: <code>{update.effective_chat.id}</code>\n\n"
-        "Set <code>ADMIN_CHAT_ID</code> to this value in your <b>.env</b> file.",
+        f"👋 Chat ID: <code>{update.effective_chat.id}</code>\n"
+        f"Your user ID: <code>{update.effective_user.id}</code>\n\n"
+        "For shared review, run /start in your private admin group and set "
+        "<code>ADMIN_CHAT_ID</code> to that group's chat ID in <b>.env</b>. "
+        "The group owner and administrators can approve, reject, /testbots, and /reset. "
+        "Make the bot a group administrator, then restart it after editing .env.",
         parse_mode="HTML",
     )
 
 
 async def testbots_command(update: Update, context) -> None:
     """Admin-only: test each moderation provider independently."""
-    if str(update.effective_chat.id) != ADMIN_CHAT_ID:
+    if not await _is_admin(update, context):
         await update.message.reply_text("⛔ Admin only.")
         return
 
@@ -182,25 +216,25 @@ async def testbots_command(update: Update, context) -> None:
 
 async def reset_command(update: Update, context) -> None:
     """Admin-only: clear all local state and Tally submissions."""
-    if str(update.effective_chat.id) != ADMIN_CHAT_ID:
+    if not await _is_admin(update, context):
         await update.message.reply_text("⛔ Admin only.")
         return
 
     loop = asyncio.get_running_loop()
     await update.message.reply_text("🔄 Clearing Tally submissions...")
 
-    await loop.run_in_executor(
-        None, lib.tally_admin.delete_all_submissions, TALLY_API_KEY, FORM_ID
-    )
-
-    lib.tracker.reset()
-    lib.pending.clear_all()
+    async with _review_lock(context):
+        await loop.run_in_executor(
+            None, lib.tally_admin.delete_all_submissions, TALLY_API_KEY, FORM_ID
+        )
+        lib.tracker.reset()
+        lib.pending.clear_all()
 
     await update.message.reply_text("✅ All cleared — tracker, pending, and Tally.")
 
 
 async def check_tally(context) -> None:
-    """JobQueue callback: poll Tally for new submissions, DM admin."""
+    """JobQueue callback: poll Tally for new submissions, notify the review chat."""
     loop = asyncio.get_running_loop()
 
     data = await loop.run_in_executor(
@@ -230,13 +264,15 @@ async def check_tally(context) -> None:
 
 
 async def _handle_submission(context, sid: str, text: str, files: list[dict]) -> None:
-    """Process a single submission: moderate, then auto-broadcast or DM admin."""
+    """Process a submission: moderate, then auto-broadcast or notify the review chat."""
     loop = asyncio.get_running_loop()
 
     # ── AI moderation ──
+    review_reason = ""
     if text:
-        result = await loop.run_in_executor(None, lib.moderation.moderate_text, text)
-        if result == "clean":
+        moderation = await loop.run_in_executor(None, lib.moderation.moderate_submission, text)
+        review_reason = moderation["reason"]
+        if moderation["result"] == "clean":
             await _broadcast(context.bot, text, files)
             lib.tracker.mark_processed(sid)
             print(f"  Auto-approved: {text[:60]}...")
@@ -253,65 +289,79 @@ async def _handle_submission(context, sid: str, text: str, files: list[dict]) ->
     )
 
     dm_text = (
-        f"📩 <b>New confession:</b>\n\n{text}"
+        f"📩 <b>New confession:</b>\n\n{escape(text)}"
         if text
         else "📩 <b>New confession (files only):</b>"
     )
     if files:
-        names = "\n".join(f"📎 {f['name']}" for f in files)
+        names = "\n".join(f"📎 {escape(f['name'])}" for f in files)
         dm_text += f"\n\n<b>Attachments:</b>\n{names}"
+    if review_reason:
+        dm_text += f"\n\n<b>Review note:</b> {escape(review_reason)}"
 
     try:
-        msg = await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=dm_text,
-            parse_mode="HTML",
-            reply_markup=keyboard,
-        )
+        async with _review_lock(context):
+            msg = await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=dm_text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            # Make the entry available before a reviewer can act on the buttons.
+            lib.pending.save_pending(sid, text, files)
+            lib.tracker.mark_processed(sid)
         await _send_files(context.bot, ADMIN_CHAT_ID, files, reply_to=msg.message_id)
-
-        lib.tracker.mark_processed(sid)
-        lib.pending.save_pending(sid, text, files)
-        print(f"Notified admin: {text[:60] if text else '(files only)'}...")
+        print(f"Notified review chat: {text[:60] if text else '(files only)'}...")
     except Exception as e:
-        print(f"Failed to DM admin: {e}")
+        print(f"Failed to notify review chat: {e}")
 
 
 async def button_handler(update: Update, context) -> None:
     """Handle Approve / Reject inline button clicks."""
     query = update.callback_query
+    if not await _is_admin(update, context):
+        await query.answer("Only administrators of the configured review chat can review.", show_alert=True)
+        return
+    action, separator, sid = (query.data or "").partition("_")
+    if not separator or not sid or action not in ("ok", "no"):
+        await query.answer("Invalid review action.", show_alert=True)
+        return
     await query.answer()
 
-    action, sid = query.data.split("_", 1)
-
-    pending = lib.pending.get_pending(sid)
-    if pending is None:
-        await query.edit_message_text("⚠️ Submission no longer available.")
-        return
-
-    text = pending["text"]
-    files = pending["files"]
-
-    if action == "ok":
-        try:
-            await _broadcast(context.bot, text, files)
-
-            label = "✅ <b>Approved &amp; sent</b>"
-            if text:
-                label += f":\n\n{text}"
-            await query.edit_message_text(label, parse_mode="HTML")
-            print(f"Approved: {text[:60] if text else '(files only)'}...")
-        except Exception as e:
-            await query.edit_message_text(f"❌ Failed to send to channel: {e}")
+    async with _review_lock(context):
+        pending = lib.pending.get_pending(sid)
+        if pending is None:
+            # Do not overwrite another admin's completed decision.
             return
-    else:
-        label = "❌ <b>Rejected</b>"
-        if text:
-            label += f":\n\n{text}"
-        await query.edit_message_text(label, parse_mode="HTML")
-        print(f"Rejected: {text[:60] if text else '(files only)'}...")
 
-    lib.pending.remove_pending(sid)
+        text = pending["text"]
+        files = pending["files"]
+        reviewer = escape(update.effective_user.full_name)
+        if action == "ok":
+            try:
+                await _broadcast(context.bot, text, files)
+            except Exception as e:
+                print(f"Failed to publish approved submission: {type(e).__name__}", flush=True)
+                await context.bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text="❌ Publishing failed. The submission remains pending; try again after checking the channel.",
+                )
+                return
+            label = f"✅ <b>Approved &amp; sent</b> by {reviewer}"
+        else:
+            label = f"❌ <b>Rejected</b> by {reviewer}"
+
+        # Commit the decision before editing Telegram's display. A failed edit
+        # must not allow another click to broadcast the same submission again.
+        lib.pending.remove_pending(sid)
+        if text:
+            label += f":\n\n{escape(text)}"
+        try:
+            await query.edit_message_text(label, parse_mode="HTML", reply_markup=None)
+        except TelegramError as error:
+            print(f"Decision saved; review message edit failed: {type(error).__name__}", flush=True)
+            return
+        print(f"Review {action} by user {update.effective_user.id}: {sid}", flush=True)
 
 
 async def daily_reset(context) -> None:
@@ -320,13 +370,12 @@ async def daily_reset(context) -> None:
     loop = asyncio.get_running_loop()
 
     # Clear Tally submissions
-    await loop.run_in_executor(
-        None, lib.tally_admin.delete_all_submissions, TALLY_API_KEY, FORM_ID
-    )
-
-    # Clear local state
-    lib.tracker.reset()
-    lib.pending.clear_all()
+    async with _review_lock(context):
+        await loop.run_in_executor(
+            None, lib.tally_admin.delete_all_submissions, TALLY_API_KEY, FORM_ID
+        )
+        lib.tracker.reset()
+        lib.pending.clear_all()
 
     print("=== Daily reset complete ===")
 
@@ -374,7 +423,7 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("reset", reset_command))
-    app.add_handler(CommandHandler("testbots", testbots_command))
+    app.add_handler(CommandHandler("testbots", testbots_command, block=False))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_error_handler(_error_handler)
 

@@ -1,4 +1,4 @@
-import ast
+import importlib
 import asyncio
 import os
 from pathlib import Path
@@ -9,6 +9,15 @@ from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from lib import moderation
+
+
+def load_bot():
+    with patch.dict(os.environ, {
+        'TALLY_API_KEY': 'test-key', 'FORM_ID': 'test-form',
+        'TELEGRAM_BOT_TOKEN': '123:test-token', 'TELEGRAM_CHANNEL_ID': '-10099',
+        'ADMIN_CHAT_ID': '123', 'DATA_DIR': '/tmp/aspi-bot-test-state',
+    }):
+        return importlib.import_module('bot')
 
 
 def response(answer=None, status=200, data=None):
@@ -108,6 +117,46 @@ class ProviderTests(unittest.TestCase):
 
 
     @patch.object(moderation.requests, 'post')
+    def test_borderline_flag_gets_note_from_same_provider(self, post):
+        post.side_effect = [response('FLAGGED'), response(
+            '{"clear_violation": false, "reason": "Neutral race mention triggers the channel rule."}')]
+        result = moderation.moderate_submission('test')
+        self.assertEqual(result['result'], 'flagged')
+        self.assertIn('Neutral race mention', result['reason'])
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args_list[0].args[0], post.call_args_list[1].args[0])
+        self.assertIn('ADMIN REVIEW-NOTE MODE',
+                      post.call_args.kwargs['json']['messages'][0]['content'])
+
+    @patch.object(moderation.requests, 'post')
+    def test_clear_flag_or_note_failure_never_changes_classification(self, post):
+        for note in [response('{"clear_violation": true, "reason": "ignored"}'),
+                     response('not JSON'), response(status=429),
+                     response('{"clear_violation": "false", "reason": "ignored"}'),
+                     response('{"clear_violation": false, "reason": 123}')]:
+            post.side_effect = [response('FLAGGED'), note]
+            self.assertEqual(moderation.moderate_submission('test'),
+                             {'result': 'flagged', 'reason': ''})
+        post.side_effect = [response('FLAGGED'), moderation.requests.Timeout('secret')]
+        self.assertEqual(moderation.moderate_submission('test'), {'result': 'flagged', 'reason': ''})
+
+    @patch.object(moderation.requests, 'post')
+    def test_clean_needs_no_note_request_and_note_length_is_bounded(self, post):
+        post.return_value = response('CLEAN')
+        self.assertEqual(moderation.moderate_submission('hello'), {'result': 'clean', 'reason': ''})
+        self.assertEqual(post.call_count, 1)
+        post.side_effect = [response('FLAGGED'), response(
+            '{"clear_violation": false, "reason": "' + 'x' * 500 + '"}')]
+        self.assertEqual(len(moderation.moderate_submission('test')['reason']), 240)
+
+    @patch.object(moderation.requests, 'post')
+    def test_error_bodies_and_embedded_classification_are_never_approved(self, post):
+        post.return_value = response('Not CLEAN, this is FLAGGED')
+        self.assertEqual(moderation.moderate_text('test'), 'error')
+        post.return_value = response(data={'error': {'code': 400}})
+        self.assertEqual(moderation.moderate_text('test'), 'error')
+
+    @patch.object(moderation.requests, 'post')
     def test_groq_probe_uses_supported_reasoning_settings(self, post):
         api = next(a for a in moderation.APIS if a['name'] == 'groq')
         post.side_effect = [response('CLEAN'), response('FLAGGED')]
@@ -116,7 +165,7 @@ class ProviderTests(unittest.TestCase):
         for call in post.call_args_list:
             self.assertEqual(call.args[0], 'https://api.groq.com/openai/v1/chat/completions')
             payload = call.kwargs['json']
-            self.assertEqual(payload['model'], 'openai/gpt-oss-120b')
+            self.assertEqual(payload['model'], api['model'])
             self.assertEqual(payload['reasoning_effort'], 'low')
             self.assertFalse(payload['include_reasoning'])
             self.assertNotIn('reasoning_format', payload)
@@ -134,19 +183,19 @@ class ProviderTests(unittest.TestCase):
 
 class CommandTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        # Exercise the actual handler without importing bot startup/environment setup.
-        tree = ast.parse((Path(__file__).resolve().parents[1] / 'src/bot.py').read_text())
-        handler = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
-                       and n.name == 'testbots_command')
+        self.bot_module = load_bot()
+        admin_id = patch.object(self.bot_module, 'ADMIN_CHAT_ID', '123')
+        admin_id.start()
+        self.addCleanup(admin_id.stop)
         self.provider = Mock(return_value='CLEAN: PASS; FLAGGED: PASS')
-        namespace = {'asyncio': asyncio, 'ADMIN_CHAT_ID': '123',
-                     'lib': SimpleNamespace(moderation=SimpleNamespace(
-                         APIS=moderation.APIS, test_provider=self.provider))}
-        exec(compile(ast.Module(body=[handler], type_ignores=[]), '<handler>', 'exec'), namespace)
-        self.handler = namespace['testbots_command']
+        provider_patch = patch.object(moderation, 'test_provider', self.provider)
+        provider_patch.start()
+        self.addCleanup(provider_patch.stop)
+        self.handler = self.bot_module.testbots_command
         self.reply = AsyncMock()
-        self.update = SimpleNamespace(effective_chat=SimpleNamespace(id=123),
-                                      message=SimpleNamespace(reply_text=self.reply))
+        self.update = SimpleNamespace(effective_chat=SimpleNamespace(id=123, type='private'),
+                                      effective_user=SimpleNamespace(id=123, is_bot=False),
+                                      message=SimpleNamespace(reply_text=self.reply, sender_chat=None))
         self.context = SimpleNamespace(bot_data={})
 
     async def test_non_admin_cannot_trigger_requests(self):

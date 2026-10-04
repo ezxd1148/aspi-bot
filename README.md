@@ -1,5 +1,37 @@
 # aspi-bot
 
+Shared admin review:
+
+1. Create a private Telegram group and invite your reviewers and the bot.
+2. Promote the bot and your reviewers to group administrators.
+3. Send `/start@YourBotUsername` in the group to get the group's chat ID.
+4. Set `ADMIN_CHAT_ID` in EC2's `.env` to that group ID, usually a negative number.
+5. Deploy the updated code and run `sudo systemctl restart aspi-bot`.
+
+Flagged submissions and their attachments go to that group. The group's owner
+and current administrators can approve/reject and run `/testbots` and `/reset`.
+Ordinary members and people in other chats cannot perform those actions.
+Use `/testbots@YourBotUsername` if several bots are in the group. Send commands
+as yourself rather than as an anonymous administrator. Keep the bot authorized
+to send messages and files in the group and publish in the confession channel.
+The bot must be an administrator to reliably verify other users' roles, per
+[Telegram's getChatMember documentation](https://core.telegram.org/bots/api#getchatmember).
+
+Completed review messages name the reviewer and remove the decision buttons.
+Concurrent clicks are serialized, and a failed message edit cannot publish the
+same submission again. Run only one bot process per token. Decisions are not
+transactional across a process crash or a partially completed media broadcast.
+Finish outstanding reviews in the old chat before changing `ADMIN_CHAT_ID`;
+old review buttons will no longer be authorized once the destination changes.
+A positive private-chat `ADMIN_CHAT_ID` retains single-admin operation.
+
+Borderline flags receive a short **Review note** explaining the rule/word or
+context that needs human judgment. Obvious violations omit the note. This uses
+one additional request to the same configured provider after a valid FLAGGED
+classification; clean submissions do not need that extra request. A failed note
+request leaves the submission pending without an explanation. AI notes are
+advisory and may be wrong; only the classification controls automatic posting.
+
 Admin command: `/testbots` tests OpenRouter, Groq, NVIDIA, and DeepSeek separately
 using the loaded moderation prompt and configured models. Run it in the chat
 configured by `ADMIN_CHAT_ID` after restarting the bot with the updated code.
