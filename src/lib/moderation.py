@@ -31,7 +31,7 @@ APIS = [
         "name": "groq",
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "key_env": "GROQ_API_KEY",
-        "model": "openai/gpt-oss-120b",  # available on Groq's Free plan
+        "model": "qwen/qwen3.8-27b",  # available on Groq's Free plan
         "timeout": 30,
         "extra_body": {"reasoning_effort": "low", "include_reasoning": False},
     },
