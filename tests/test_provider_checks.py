@@ -75,6 +75,31 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(post.call_args.args[0], moderation.APIS[1]['url'])
 
 
+    @patch.object(moderation.requests, 'post')
+    def test_groq_probe_uses_supported_reasoning_settings(self, post):
+        api = next(a for a in moderation.APIS if a['name'] == 'groq')
+        post.side_effect = [response('CLEAN'), response('FLAGGED')]
+        with patch.dict(os.environ, {'GROQ_API_KEY': 'test-key'}, clear=True):
+            self.assertIn('CLEAN: PASS; FLAGGED: PASS', moderation.test_provider(api))
+        for call in post.call_args_list:
+            self.assertEqual(call.args[0], 'https://api.groq.com/openai/v1/chat/completions')
+            payload = call.kwargs['json']
+            self.assertEqual(payload['model'], 'openai/gpt-oss-120b')
+            self.assertEqual(payload['reasoning_effort'], 'low')
+            self.assertFalse(payload['include_reasoning'])
+            self.assertNotIn('reasoning_format', payload)
+
+    @patch.object(moderation.requests, 'post')
+    def test_groq_rate_limit_falls_back_to_nvidia(self, post):
+        with patch.dict(os.environ, {a['key_env']: 'test-key' for a in moderation.APIS}, clear=True):
+            post.side_effect = [response(status=429), response(status=429), response('FLAGGED')]
+            self.assertEqual(moderation.moderate_text('test'), 'flagged')
+        self.assertEqual([call.args[0] for call in post.call_args_list],
+                         [a['url'] for a in moderation.APIS[:3]])
+        self.assertEqual(moderation.APIS[1]['name'], 'groq')
+        self.assertEqual(moderation.APIS[2]['name'], 'nvidia')
+
+
 class CommandTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # Exercise the actual handler without importing bot startup/environment setup.
