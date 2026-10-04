@@ -13,6 +13,15 @@ about two minutes and consumes provider quota or credits. Test submissions are
 never broadcast or stored as confessions. Passing these samples verifies basic
 connectivity and classification, not every moderation rule.
 
+Both checks must pass for a provider to pass the basic probe. Failure details
+distinguish error bodies inside HTTP 200 responses, invalid JSON, missing/empty
+choices, empty final answers, refusals, content filtering, and token limits.
+Raw provider responses and error messages are not included in Telegram replies.
+To investigate a failed OpenRouter probe, deploy the updated code, restart the
+service, run `/testbots`, and compare the two requests with your OpenRouter
+Activity dashboard. Repeated passes and a broader set of labeled moderation
+examples are needed to evaluate reliability beyond these two samples.
+
 Moderation fallback order: OpenRouter -> Groq -> NVIDIA -> DeepSeek. Providers
 without a configured API key are skipped; HTTP failures and rate limits move to
 the next provider.

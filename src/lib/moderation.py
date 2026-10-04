@@ -159,6 +159,43 @@ def moderate_text(text: str) -> str:
     return "error"
 
 
+def _probe_answer(data) -> tuple[str, str | None]:
+    """Describe probe failures without exposing raw API output or error messages."""
+    if not isinstance(data, dict):
+        return "", "response is not a JSON object"
+    if data.get("error"):
+        error = data["error"]
+        code = error.get("code") if isinstance(error, dict) else None
+        detail = f" (code {code})" if type(code) is int else ""
+        return "", f"API error in response body{detail}"
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        return "", "missing or invalid choices array"
+    if not choices:
+        return "", "empty choices array"
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return "", "invalid choice object"
+    finish = choice.get("finish_reason")
+    if finish == "length":
+        return "", "token limit reached (finish_reason=length)"
+    if finish == "content_filter":
+        return "", "provider content filter blocked the answer"
+    if finish == "error":
+        return "", "provider generation error"
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return "", "missing or invalid message object"
+    if message.get("refusal"):
+        return "", "provider refused the classification"
+    reply = message.get("content")
+    if reply is None or reply == "":
+        return "", "empty final answer"
+    if not isinstance(reply, str):
+        return "", "content is not a text string"
+    return reply.strip(), None
+
+
 def test_provider(api: dict) -> str:
     """Probe one provider without fallback or publishing any submissions."""
     key = os.getenv(api["key_env"])
@@ -183,12 +220,16 @@ def test_provider(api: dict) -> str:
                 reason = reasons.get(resp.status_code, "API error")
                 checks.append(f"{expected}: FAIL - HTTP {resp.status_code} ({reason})")
                 break
-            data = resp.json()
-            reply = data["choices"][0]["message"].get("content") or ""
-            if not isinstance(reply, str):
-                raise ValueError("Invalid content type")
+            try:
+                data = resp.json()
+            except ValueError:
+                checks.append(f"{expected}: FAIL - response is not valid JSON")
+                continue
+            answer, error = _probe_answer(data)
+            if error:
+                checks.append(f"{expected}: FAIL - {error}")
+                continue
             # Require the actual final answer, not a classification guessed from reasoning.
-            answer = reply.strip()
             if answer == expected:
                 checks.append(f"{expected}: PASS")
             elif answer in ("CLEAN", "FLAGGED"):

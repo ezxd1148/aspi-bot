@@ -68,6 +68,36 @@ class ProviderTests(unittest.TestCase):
                 self.assertIn('CLEAN: FAIL', moderation.test_provider(self.api))
 
     @patch.object(moderation.requests, 'post')
+    def test_response_failures_are_specific_and_do_not_expose_raw_text(self, post):
+        cases = [
+            ({'error': {'code': 429, 'message': 'secret'}}, 'API error in response body (code 429)'),
+            ({'choices': []}, 'empty choices array'),
+            ({}, 'missing or invalid choices array'),
+            ({'choices': [{'message': None}]}, 'missing or invalid message object'),
+            ({'choices': [{'message': {'content': ['secret']}}]}, 'content is not a text string'),
+            ({'choices': [{'finish_reason': 'length', 'message': {'content': 'CLEAN'}}]}, 'token limit reached'),
+            ({'choices': [{'finish_reason': 'content_filter'}]}, 'provider content filter blocked'),
+            ({'choices': [{'message': {'refusal': 'secret'}}]}, 'provider refused the classification'),
+            ({'choices': [{'message': {'content': None, 'reasoning_content': 'CLEAN'}}]}, 'empty final answer'),
+        ]
+        for data, expected in cases:
+            with self.subTest(expected=expected):
+                post.side_effect = [response(data=data), response('FLAGGED')]
+                result = moderation.test_provider(self.api)
+                self.assertIn(f'CLEAN: FAIL - {expected}', result)
+                self.assertNotIn('secret', result)
+                self.assertIn('FLAGGED: PASS', result)
+
+    @patch.object(moderation.requests, 'post')
+    def test_non_json_response_is_not_reported_as_connection_error(self, post):
+        bad = response()
+        bad.json.side_effect = ValueError('secret')
+        post.side_effect = [bad, response('FLAGGED')]
+        result = moderation.test_provider(self.api)
+        self.assertIn('response is not valid JSON', result)
+        self.assertNotIn('secret', result)
+
+    @patch.object(moderation.requests, 'post')
     def test_existing_moderation_still_rotates_on_http_failure(self, post):
         with patch.dict(os.environ, {a['key_env']: 'test-key' for a in moderation.APIS}):
             post.side_effect = [response(status=429), response('CLEAN')]
