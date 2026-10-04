@@ -21,7 +21,8 @@ APIS = [
         "key_env": "OPENROUTER_API_KEY",
         "model": "openrouter/free",  # free tier
         "timeout": 15,
-        "extra_body": {"reasoning_effort": "none"},
+        # The free router may choose a model that cannot disable reasoning.
+        "extra_body": {"reasoning": {"exclude": True}},
         "extra_headers": {
             "HTTP-Referer": "https://github.com/aspi-bot",
             "X-Title": "aspi-bot",
@@ -212,6 +213,7 @@ def test_provider(api: dict) -> str:
             resp = _request_moderation(api, text, key)
             if resp.status_code != 200:
                 reasons = {
+                    400: "invalid request or unsupported parameters",
                     401: "authentication failed",
                     403: "access denied",
                     402: "no credits",

@@ -36,6 +36,8 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(payload['model'], self.api['model'])
             self.assertEqual(payload['messages'][0]['content'], moderation.SYSTEM_PROMPT)
             self.assertEqual(call.kwargs['timeout'], self.api['timeout'])
+            self.assertNotIn('reasoning_effort', payload)
+            self.assertEqual(payload['reasoning'], {'exclude': True})
         self.assertIn('g#y', post.call_args.kwargs['json']['messages'][1]['content'])
 
     @patch.object(moderation.requests, 'post')
