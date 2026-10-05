@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 
 DATA_DIR = os.getenv("DATA_DIR") or os.path.join(
     os.path.dirname(__file__), "..", "..", "data"
@@ -25,8 +26,21 @@ def _load() -> dict:
 
 def _save(data: dict) -> None:
     path = _ensure_data_dir()
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    # A reader must see the old or new complete document, never a truncated write.
+    with tempfile.NamedTemporaryFile(mode="w", dir=os.path.dirname(path), delete=False) as f:
+        temporary = f.name
+        try:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        except BaseException:
+            os.unlink(temporary)
+            raise
+    try:
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def save_pending(submission_id: str, text: str, files: list[dict]) -> None:
@@ -52,6 +66,19 @@ def get_pending(submission_id: str) -> dict | None:
 def clear_all() -> None:
     """Remove all pending entries."""
     _save({})
+
+
+def list_pending() -> dict:
+    """Include legacy entries without rewriting or losing their data."""
+    return {sid: ({"text": entry, "files": []} if isinstance(entry, str) else entry)
+            for sid, entry in _load().items() if isinstance(entry, (str, dict))}
+
+
+def update_pending(submission_id: str, **metadata) -> None:
+    data = list_pending()
+    if submission_id in data:
+        data[submission_id].update(metadata)
+        _save(data)
 
 
 def remove_pending(submission_id: str) -> None:

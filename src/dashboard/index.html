@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Review desk · ASPI</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body data-page="dashboard">
+  <aside class="sidebar">
+    <a class="brand" href="/dashboard"><span class="brand-mark" aria-hidden="true">a</span> ASPI</a>
+    <p class="workspace-label">REVIEW DESK</p>
+    <nav aria-label="Dashboard">
+      <button class="nav-item active" data-view="overview" aria-current="page"><span aria-hidden="true">◫</span> Overview</button>
+      <button class="nav-item" data-view="reviews"><span aria-hidden="true">▤</span> Review queue <span id="queue-badge" class="nav-badge">—</span></button>
+      <button class="nav-item" data-view="activity"><span aria-hidden="true">◷</span> Activity</button>
+      <button class="nav-item" data-view="providers"><span aria-hidden="true">⌁</span> Providers</button>
+      <button class="nav-item" data-view="admins"><span aria-hidden="true">♧</span> Admin team</button>
+    </nav>
+    <div class="sidebar-bottom"><p id="signed-in">Checking access…</p><button id="logout" class="text-button">Sign out</button></div>
+  </aside>
+  <main class="workspace">
+    <header class="page-header"><div><p class="eyebrow">ASPI ADMIN WORKSPACE</p><h1 id="page-title">Overview</h1></div><button id="refresh" class="button secondary">Refresh <span aria-hidden="true">↻</span></button></header>
+    <p id="last-updated" class="muted">Loading your workspace…</p>
+    <div id="error" class="error-banner" role="alert" hidden></div>
+    <section id="overview" class="view">
+      <div class="welcome"><div><h2>Keep the queue moving.</h2><p>A view of the bot and the submissions that need your attention.</p></div><button class="button primary" data-view="reviews">Open review queue →</button></div>
+      <div class="stats">
+        <article class="stat"><p>Waiting for review</p><strong id="stat-pending">—</strong><span>Needs a human decision</span></article>
+        <article class="stat"><p>Approved today</p><strong id="stat-approved">—</strong><span>Manual + automatic · UTC</span></article>
+        <article class="stat"><p>Rejected today</p><strong id="stat-rejected">—</strong><span>Reviewed by the admin team · UTC</span></article>
+        <article class="stat"><p>Errors today</p><strong id="stat-errors">—</strong><span>Recorded failures · UTC</span></article>
+      </div>
+      <div class="two-column">
+        <article class="panel"><div class="panel-heading"><h2>Bot status</h2><span id="poll-status" class="pill">Checking</span></div><dl id="bot-details" class="details"></dl></article>
+        <article class="panel"><div class="panel-heading"><h2>Daily reset</h2><span id="reset-status" class="pill">Scheduled</span></div><dl id="reset-details" class="details"></dl><p class="muted small">A reset deletes Tally submissions and clears pending reviews. Activity history is retained.</p><button id="reset-button" class="button danger">Reset submissions…</button></article>
+      </div>
+    </section>
+    <section id="reviews" class="view" hidden><p class="section-description">Read the submission and make a decision. Decisions also update the Telegram review message.</p><div id="review-list" class="review-list"></div><div class="pagination"><button id="previous-page" class="button secondary">← Previous</button><span id="page-info" class="muted"></span><button id="next-page" class="button secondary">Next →</button></div></section>
+    <section id="activity" class="view" hidden><div class="panel"><div class="panel-heading"><h2>Recent activity</h2><span class="muted small">Latest 100 events · retained for 30 days</span></div><div id="activity-list" class="activity-list"></div></div></section>
+    <section id="providers" class="view" hidden><div class="section-toolbar"><p class="section-description">Configuration and the latest manual connectivity checks.</p><button id="test-providers" class="button primary">Test providers</button></div><p id="provider-test-info" class="muted small"></p><div id="provider-list" class="provider-grid"></div><p class="muted small">Tests send CLEAN and FLAGGED samples and may use provider quota or credits. Nothing is published.</p></section>
+    <section id="admins" class="view" hidden><div class="panel"><div class="panel-heading"><h2>Your admin team</h2><span id="admin-group" class="muted small"></span></div><p class="muted small">Access follows the current administrators of the Telegram review group.</p><div id="admin-list" class="admin-list"></div></div></section>
+    <footer class="workspace-footer"><span>Decisions made here stay in sync with Telegram.</span><span id="build-label"></span></footer>
+  </main>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

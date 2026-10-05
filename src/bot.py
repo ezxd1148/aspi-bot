@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 import hashlib
+import time
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
@@ -54,6 +55,9 @@ BUILD_ID = hashlib.sha256(b"".join(
     (PROJECT_ROOT / name).read_bytes() for name in (
         "src/bot.py", "src/lib/config.py", "src/lib/moderation.py",
         "src/lib/Prompt/SYSTEM_PROMPT.md",
+        "src/lib/dashboard.py", "src/lib/dashboard_backend.py", "src/lib/dashboard_store.py",
+        "src/lib/pending.py", "src/requirements.txt",
+        "src/dashboard/index.html", "src/dashboard/login.html", "src/dashboard/app.js", "src/dashboard/app.css",
     )
 )).hexdigest()[:12]
 
@@ -100,6 +104,105 @@ async def _is_admin(update: Update, context) -> bool:
 def _review_lock(context) -> asyncio.Lock:
     """Serialize decisions and resets within the single running bot process."""
     return context.bot_data.setdefault("review_lock", asyncio.Lock())
+
+
+def _runtime(context) -> dict:
+    return context.bot_data.setdefault("runtime", {})
+
+
+def _event(context, kind: str, **metadata) -> None:
+    store = context.bot_data.get("audit_store")
+    if store is not None:
+        try:
+            store.record(kind, **metadata)
+        except Exception as error:
+            _runtime(context)["audit_error"] = type(error).__name__
+            print(f"Audit log write failed: {type(error).__name__}", flush=True)
+
+
+async def _probe_providers(context) -> list[dict]:
+    """Both interfaces use the same provider probe and safe result formatting."""
+    runtime = _runtime(context)
+    runtime["provider_test_started"] = time.time()
+    _event(context, "provider_test_started")
+    results = await asyncio.gather(*[
+        asyncio.get_running_loop().run_in_executor(None, lib.moderation.test_provider, api)
+        for api in lib.moderation.APIS
+    ], return_exceptions=True)
+    formatted = [{"name": api["name"], "model": api["model"],
+                  "result": f"FAIL - test error ({type(result).__name__})" if isinstance(result, BaseException) else result}
+                 for api, result in zip(lib.moderation.APIS, results)]
+    runtime["provider_results"] = formatted
+    runtime["provider_test_finished"] = time.time()
+    _event(context, "provider_test_complete")
+    return formatted
+
+
+async def _decide_submission(context, sid: str, action: str, user, source="telegram") -> dict:
+    """One decision/publishing path and lock for Telegram and the dashboard."""
+    if action not in ("ok", "no"):
+        raise ValueError("Invalid review action")
+    async with _review_lock(context):
+        pending = lib.pending.get_pending(sid)
+        if pending is None:
+            return {"status": "missing"}
+        if action == "ok":
+            try:
+                await _broadcast(context.bot, pending["text"], pending["files"])
+            except Exception as error:
+                _event(context, "publish_failed", submission_id=sid, actor=user, source=source,
+                       detail=type(error).__name__)
+                print(f"Failed to publish approved submission: {type(error).__name__}", flush=True)
+                return {"status": "failed"}
+        lib.pending.remove_pending(sid)
+        _event(context, "approved" if action == "ok" else "rejected",
+               submission_id=sid, actor=user, source=source)
+        print(f"Review {action} by user {user.id}: {sid}", flush=True)
+        return {"status": "done", "pending": pending}
+
+
+def _decision_label(pending, action, user):
+    label = ("✅ <b>Approved &amp; sent</b>" if action == "ok" else "❌ <b>Rejected</b>")
+    label += f" by {escape(user.full_name)}"
+    if pending["text"]:
+        label += f":\n\n{escape(pending['text'])}"
+    return label
+
+
+async def _reset_submissions(context, *, actor=None, source="telegram", scheduled=False) -> dict:
+    runtime = _runtime(context)
+    if runtime.get("reset_running"):
+        return {"ok": False, "phase": "busy"}
+    runtime["reset_running"] = True
+    started = time.time()
+    runtime["last_reset"] = {"started": started, "status": "running", "source": source}
+    _event(context, "reset_started", actor=actor, source=source)
+    try:
+        async with _review_lock(context):
+            if scheduled:
+                await _notify_daily_reset(context, "🔄 Daily reset starting: clearing Tally submissions and local review state.")
+            elif source == "dashboard":
+                await _notify_daily_reset(context, f"🔄 Dashboard reset starting, requested by {actor.full_name}.")
+            try:
+                deleted = await asyncio.get_running_loop().run_in_executor(
+                    None, lib.tally_admin.delete_all_submissions, TALLY_API_KEY, FORM_ID)
+            except Exception as error:
+                result = {"ok": False, "phase": "tally", "error": type(error).__name__}
+            else:
+                try:
+                    lib.tracker.reset()
+                    lib.pending.clear_all()
+                except Exception as error:
+                    result = {"ok": False, "phase": "local", "error": type(error).__name__, "deleted": deleted}
+                else:
+                    result = {"ok": True, "deleted": deleted}
+        runtime["last_reset"] = {"started": started, "finished": time.time(), "source": source,
+                                 "status": "complete" if result["ok"] else "failed", **result}
+        _event(context, "reset_complete" if result["ok"] else "reset_failed", actor=actor, source=source,
+               detail=f"Deleted {result['deleted']} Tally submissions" if result["ok"] else f"{result['phase']}: {result['error']}")
+        return result
+    finally:
+        runtime["reset_running"] = False
 
 
 def _split_files(files: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -314,6 +417,9 @@ async def testbots_command(update: Update, context) -> None:
     if context.bot_data.get("provider_test_running"):
         await update.message.reply_text("A provider test is already running.")
         return
+    if time.time() - _runtime(context).get("provider_test_started", 0) < 60:
+        await update.message.reply_text("Wait a minute between provider tests.")
+        return
 
     context.bot_data["provider_test_running"] = True
     try:
@@ -321,16 +427,10 @@ async def testbots_command(update: Update, context) -> None:
             "Testing each moderation provider with CLEAN and FLAGGED samples. "
             "This can take about two minutes and uses API quota/credits."
         )
-        loop = asyncio.get_running_loop()
-        results = await asyncio.gather(*[
-            loop.run_in_executor(None, lib.moderation.test_provider, api)
-            for api in lib.moderation.APIS
-        ], return_exceptions=True)
+        results = await _probe_providers(context)
         lines = ["Moderation provider test:"]
-        for api, result in zip(lib.moderation.APIS, results):
-            if isinstance(result, BaseException):
-                result = f"FAIL - test error ({type(result).__name__})"
-            lines.append(f"\n{api['name']} ({api['model']})\n{result}")
+        for result in results:
+            lines.append(f"\n{result['name']} ({result['model']})\n{result['result']}")
         await update.message.reply_text("\n".join(lines), parse_mode=None)
     finally:
         context.bot_data.pop("provider_test_running", None)
@@ -342,35 +442,41 @@ async def reset_command(update: Update, context) -> None:
         await update.message.reply_text("⛔ Admin only.")
         return
 
-    loop = asyncio.get_running_loop()
     await update.message.reply_text("🔄 Clearing Tally submissions...")
-
-    async with _review_lock(context):
-        try:
-            await loop.run_in_executor(
-                None, lib.tally_admin.delete_all_submissions, TALLY_API_KEY, FORM_ID
-            )
-        except Exception as error:
-            await update.message.reply_text(
-                f"❌ Tally reset failed ({type(error).__name__}). Local pending reviews were preserved."
-            )
-            return
-        lib.tracker.reset()
-        lib.pending.clear_all()
-
-    await update.message.reply_text("✅ All cleared — tracker, pending, and Tally.")
+    result = await _reset_submissions(context, actor=update.effective_user)
+    if result["ok"]:
+        message = "✅ All cleared — tracker, pending, and Tally."
+    elif result["phase"] == "busy":
+        message = "A reset is already running."
+    elif result["phase"] == "tally":
+        message = f"❌ Tally reset failed ({result['error']}). Local pending reviews were preserved."
+    else:
+        message = f"❌ Local reset failed ({result['error']}). Tally was cleared; check the service logs."
+    await update.message.reply_text(message)
 
 
 async def check_tally(context) -> None:
     """JobQueue callback: poll Tally for new submissions, notify the review chat."""
     loop = asyncio.get_running_loop()
 
-    data = await loop.run_in_executor(
-        None, lib.fetch_form.fetch_data, TALLY_API_KEY, FORM_ID
-    )
+    runtime = _runtime(context)
+    runtime["last_poll_attempt"] = time.time()
+    try:
+        data = await loop.run_in_executor(
+            None, lib.fetch_form.fetch_data, TALLY_API_KEY, FORM_ID
+        )
+    except Exception as error:
+        runtime["last_poll_error"] = type(error).__name__
+        _event(context, "poll_failed", detail=type(error).__name__)
+        print(f"Tally fetch failed: {type(error).__name__}", flush=True)
+        return
     if data is None:
+        runtime["last_poll_error"] = "Tally request failed"
+        _event(context, "poll_failed", detail="Tally request failed")
         print("Tally fetch failed.")
         return
+    runtime["last_poll_success"] = time.time()
+    runtime["last_poll_error"] = None
 
     submissions = data.get("submissions", [])
     tasks = []
@@ -397,12 +503,18 @@ async def _handle_submission(context, sid: str, text: str, files: list[dict]) ->
 
     # ── AI moderation ──
     review_reason = ""
+    moderation_result = "files_only"
     if text:
         moderation = await loop.run_in_executor(None, lib.moderation.moderate_submission, text)
         review_reason = moderation["reason"]
+        moderation_result = moderation["result"]
+        if moderation_result == "error":
+            _event(context, "moderation_failed", submission_id=sid, detail="Providers unavailable; manual review required")
         if moderation["result"] == "clean":
-            await _broadcast(context.bot, text, files)
-            lib.tracker.mark_processed(sid)
+            async with _review_lock(context):
+                await _broadcast(context.bot, text, files)
+                lib.tracker.mark_processed(sid)
+                _event(context, "auto_approved", submission_id=sid)
             print(f"  Auto-approved: {text[:60]}...")
             return
 
@@ -437,11 +549,15 @@ async def _handle_submission(context, sid: str, text: str, files: list[dict]) ->
             )
             # Make the entry available before a reviewer can act on the buttons.
             lib.pending.save_pending(sid, text, files)
+            lib.pending.update_pending(sid, reason=review_reason, moderation=moderation_result,
+                                       created_at=time.time(), message_id=msg.message_id)
             lib.tracker.mark_processed(sid)
+            _event(context, "pending", submission_id=sid, detail=moderation_result)
         await _send_files(context.bot, REVIEW_CHAT_ID, files, reply_to=msg.message_id)
         print(f"Notified review chat: {text[:60] if text else '(files only)'}...")
     except Exception as e:
-        print(f"Failed to notify review chat: {e}")
+        _event(context, "review_delivery_failed", submission_id=sid, detail=type(e).__name__)
+        print(f"Failed to notify review chat: {type(e).__name__}")
 
 
 async def button_handler(update: Update, context) -> None:
@@ -456,40 +572,20 @@ async def button_handler(update: Update, context) -> None:
         return
     await query.answer()
 
-    async with _review_lock(context):
-        pending = lib.pending.get_pending(sid)
-        if pending is None:
-            # Do not overwrite another admin's completed decision.
-            return
-
-        text = pending["text"]
-        files = pending["files"]
-        reviewer = escape(update.effective_user.full_name)
-        if action == "ok":
-            try:
-                await _broadcast(context.bot, text, files)
-            except Exception as e:
-                print(f"Failed to publish approved submission: {type(e).__name__}", flush=True)
-                await context.bot.send_message(
-                    chat_id=REVIEW_CHAT_ID,
-                    text="❌ Publishing failed. The submission remains pending; try again after checking the channel.",
-                )
-                return
-            label = f"✅ <b>Approved &amp; sent</b> by {reviewer}"
-        else:
-            label = f"❌ <b>Rejected</b> by {reviewer}"
-
-        # Commit the decision before editing Telegram's display. A failed edit
-        # must not allow another click to broadcast the same submission again.
-        lib.pending.remove_pending(sid)
-        if text:
-            label += f":\n\n{escape(text)}"
-        try:
-            await query.edit_message_text(label, parse_mode="HTML", reply_markup=None)
-        except TelegramError as error:
-            print(f"Decision saved; review message edit failed: {type(error).__name__}", flush=True)
-            return
-        print(f"Review {action} by user {update.effective_user.id}: {sid}", flush=True)
+    result = await _decide_submission(context, sid, action, update.effective_user)
+    if result["status"] == "missing":
+        return
+    if result["status"] == "failed":
+        await context.bot.send_message(
+            chat_id=REVIEW_CHAT_ID,
+            text="❌ Publishing failed. The submission remains pending; try again after checking the channel.",
+        )
+        return
+    try:
+        await query.edit_message_text(_decision_label(result["pending"], action, update.effective_user),
+                                      parse_mode="HTML", reply_markup=None)
+    except TelegramError as error:
+        print(f"Decision saved; review message edit failed: {type(error).__name__}", flush=True)
 
 
 async def _notify_daily_reset(context, text: str) -> None:
@@ -502,33 +598,19 @@ async def _notify_daily_reset(context, text: str) -> None:
 async def daily_reset(context) -> None:
     """Reset Tally submissions and local state every 24 hours."""
     print("=== Daily reset starting ===")
-    loop = asyncio.get_running_loop()
-
-    # Clear Tally submissions
-    async with _review_lock(context):
-        await _notify_daily_reset(context, "🔄 Daily reset starting: clearing Tally submissions and local review state.")
-        try:
-            await loop.run_in_executor(
-                None, lib.tally_admin.delete_all_submissions, TALLY_API_KEY, FORM_ID
-            )
-        except Exception as error:
-            print(f"Daily reset failed ({type(error).__name__}); local review state preserved.", flush=True)
-            await _notify_daily_reset(
-                context, f"❌ Daily Tally reset failed ({type(error).__name__}). Local pending reviews were preserved; check the service logs."
-            )
-            return
-        try:
-            lib.tracker.reset()
-            lib.pending.clear_all()
-        except Exception as error:
-            print(f"Daily local state reset failed ({type(error).__name__}).", flush=True)
-            await _notify_daily_reset(
-                context, f"❌ Daily reset failed while clearing local review state ({type(error).__name__}). Tally was cleared; check the service logs."
-            )
-            return
-
-    print("=== Daily reset complete ===")
-    await _notify_daily_reset(context, "✅ Daily reset complete: Tally submissions, tracker, and pending reviews cleared.")
+    result = await _reset_submissions(context, source="schedule", scheduled=True)
+    if "next_reset" in _runtime(context):
+        _runtime(context)["next_reset"] += 86400
+    if result["ok"]:
+        print("=== Daily reset complete ===")
+        message = "✅ Daily reset complete: Tally submissions, tracker, and pending reviews cleared."
+    elif result["phase"] == "busy":
+        message = "Daily reset skipped: another reset is already running."
+    elif result["phase"] == "tally":
+        message = f"❌ Daily Tally reset failed ({result['error']}). Local pending reviews were preserved; check the service logs."
+    else:
+        message = f"❌ Daily reset failed while clearing local review state ({result['error']}). Tally was cleared; check the service logs."
+    await _notify_daily_reset(context, message)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -537,6 +619,7 @@ async def daily_reset(context) -> None:
 async def _error_handler(update: object, context) -> None:
     """Log errors cleanly — suppresses noisy tracebacks for transient network issues."""
     err = context.error
+    _event(context, "handler_failed", detail=type(err).__name__)
     print(f"Handler error: {type(err).__name__}", flush=True)
     if isinstance(err, Conflict):
         if "webhook" in str(err).lower():
@@ -593,6 +676,11 @@ COMMANDS = (
 
 
 async def _post_init(app) -> None:
+    from lib.dashboard import Dashboard, Settings
+    from lib.dashboard_backend import BotBackend
+    from lib.dashboard_store import AuditStore
+
+    settings = Settings.from_environment()
     # Validate first: a broken group configuration must not silently send to a DM.
     await _validate_review_destination(app.bot)
     print(
@@ -615,7 +703,20 @@ async def _post_init(app) -> None:
     except TelegramError as error:
         print(f"Command menu update failed ({type(error).__name__}); typed commands remain registered.", flush=True)
     await asyncio.get_running_loop().run_in_executor(None, _seed_tracker)
+    _runtime(app)["started"] = time.time()
+    if settings:
+        app.bot_data["audit_store"] = AuditStore(Path(lib.pending.PENDING_FILE).parent / "activity.sqlite3")
+        dashboard = Dashboard(settings, app.bot, REVIEW_CHAT_ID, BotBackend(app, sys.modules[__name__]))
+        app.bot_data["dashboard"] = dashboard
+        await dashboard.start()
+        _event(app, "bot_started", detail=f"Build {BUILD_ID}")
     lib.web_server.start()
+
+
+async def _post_stop(app) -> None:
+    dashboard = app.bot_data.get("dashboard")
+    if dashboard:
+        await dashboard.close()
 
 
 def create_application():
@@ -626,6 +727,7 @@ def create_application():
         .read_timeout(30)
         .write_timeout(30)
         .post_init(_post_init)
+        .post_stop(_post_stop)
         .build()
     )
 
@@ -648,6 +750,8 @@ def main() -> None:
     if reset_time <= now:
         reset_time += timedelta(days=1)
     first_delay = (reset_time - now).total_seconds()
+    _runtime(app)["next_reset"] = reset_time.astimezone().timestamp()
+    _runtime(app)["reset_timezone"] = str(reset_time.astimezone().tzinfo)
     app.job_queue.run_repeating(daily_reset, interval=86400, first=first_delay)
     print(
         f"Daily reset scheduled at {reset_hour:02d}:00 (in {first_delay / 3600:.1f}h)."
@@ -659,7 +763,14 @@ def main() -> None:
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--check-config"]:
+        from lib.dashboard import Settings
+        try:
+            dashboard_settings = Settings.from_environment()
+        except ValueError as error:
+            raise SystemExit(f"Dashboard configuration error: {error}") from error
         print(f"Project: {PROJECT_ROOT}\nConfig: {lib.config.ENV_FILE}\nBuild: {BUILD_ID}\n"
               f"Review destination: {REVIEW_CHAT_ID} via {REVIEW_CONFIG_KEY}\nChannel: {TELEGRAM_CHANNEL_ID}")
+        print(f"Dashboard: {dashboard_settings.origin} (127.0.0.1:{dashboard_settings.port})"
+              if dashboard_settings else "Dashboard: disabled (DASHBOARD_URL is unset)")
     else:
         main()

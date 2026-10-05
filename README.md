@@ -1,5 +1,11 @@
 # aspi-bot
 
+An optional admin dashboard adds the review queue, bot health, provider checks,
+admin list, reset controls, and persistent activity history. It runs in the same
+bot process and uses Telegram login with current group-admin authorization.
+Leave `DASHBOARD_URL` unset to keep it disabled. See
+[dashboard setup, DNS, and HTTPS instructions](docs/dashboard.md).
+
 Shared admin review:
 
 1. Create a private Telegram group and invite your reviewers and the bot.

@@ -1,0 +1,6 @@
+# Replace admin.example.com with the subdomain configured in DASHBOARD_URL.
+# Copy this to /etc/caddy/Caddyfile on EC2. Keep DASHBOARD_PORT=8081.
+# Caddy manages HTTPS certificates and redirects HTTP to HTTPS automatically.
+admin.example.com {
+    reverse_proxy 127.0.0.1:8081
+}
