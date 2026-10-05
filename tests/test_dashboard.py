@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from aiohttp.test_utils import TestClient, TestServer
-from aiohttp import ClientSession, web
+from aiohttp import BasicAuth, ClientSession, web
 from cryptography.hazmat.primitives.asymmetric import rsa
 import jwt
 from telegram import Chat
@@ -189,6 +189,105 @@ class DashboardSecurityTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.get('/auth/callback', params={'state': state, 'code': 'code'},
                                              headers={'Cookie': LOGIN_COOKIE + '=' + state}, allow_redirects=False)
         self.assertEqual(response.status, 403)
+        self.assertFalse(self.dashboard.sessions)
+
+    async def test_real_code_exchange_and_signed_tokens_with_safe_failure_diagnostics(self):
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        jwk = jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+        jwk.update(kid='telegram-test', use='sig')
+        scenario = {}
+        secret_text = 'private-code-token-secret-and-provider-description'
+
+        async def exchange(request):
+            self.assertEqual(request.headers['Authorization'], BasicAuth('123', 'secret').encode())
+            form = await request.post()
+            self.assertEqual(dict(form), {'grant_type': 'authorization_code', 'code': secret_text,
+                                         'redirect_uri': self.dashboard.settings.callback_url,
+                                         'client_id': '123', 'code_verifier': scenario['verifier']})
+            if 'exchange_error' in scenario:
+                return web.json_response({'error': scenario['exchange_error'], 'error_description': secret_text},
+                                         status=scenario['status'])
+            if scenario.get('missing_token'):
+                return web.json_response({'access_token': secret_text})
+            claims = {'iss': str(provider.make_url('')).rstrip('/'), 'aud': '123',
+                      'sub': 'different-subject', 'id': 10, 'iat': int(time.time()),
+                      'exp': int(time.time()) + 300, 'nonce': scenario['nonce'], 'name': 'Admin'}
+            claims.update(scenario.get('claims', {}))
+            if scenario.get('missing_nonce'):
+                claims.pop('nonce')
+            algorithm = scenario.get('algorithm', 'RS256')
+            key = private_key if algorithm == 'RS256' else secret_text
+            token = jwt.encode(claims, key, algorithm=algorithm, headers={'kid': 'telegram-test'})
+            scenario['token'] = token
+            return web.json_response({'id_token': token})
+
+        async def keys(request):
+            if scenario.get('keys_error'):
+                return web.Response(text=secret_text, status=503)
+            return web.json_response({'keys': secret_text if scenario.get('invalid_keys') else [jwk]})
+
+        app = web.Application()
+        app.add_routes([web.post('/token', exchange), web.get('/.well-known/jwks.json', keys)])
+        provider = TestServer(app)
+        await provider.start_server()
+        self.addAsyncCleanup(provider.close)
+        self.enterContext(patch('lib.dashboard.ISSUER', str(provider.make_url('')).rstrip('/')))
+        async with ClientSession() as http:
+            self.dashboard.http = http
+            cases = [({}, None),
+                     ({'exchange_error': 'invalid_client', 'status': 401}, 'token_endpoint_http_401_invalid_client'),
+                     ({'exchange_error': 'invalid_grant', 'status': 400}, 'token_endpoint_http_400_invalid_grant'),
+                     ({'exchange_error': secret_text, 'status': 400}, 'token_endpoint_http_400'),
+                     ({'missing_token': True}, 'token_endpoint_missing_id_token'),
+                     ({'missing_nonce': True}, 'missing_claim_nonce'),
+                     ({'claims': {'nonce': 'wrong-☃'}}, 'nonce_mismatch'),
+                     ({'claims': {'aud': 'different-client'}}, 'client_id_mismatch'),
+                     ({'algorithm': 'HS256'}, 'unsupported_signing_algorithm_set_botfather_RS256'),
+                     ({'keys_error': True}, 'signing_keys_http_503'),
+                     ({'invalid_keys': True}, 'invalid_signing_keys_response')]
+            for case, reason in cases:
+                with self.subTest(case=case):
+                    scenario.clear()
+                    scenario.update(case)
+                    self.dashboard.keys = []
+                    self.dashboard.keys_until = 0
+                    self.dashboard.sessions.clear()
+                    state, query, _ = await self.begin_login()
+                    scenario.update(nonce=query['nonce'][0], verifier=self.dashboard.logins[state]['verifier'])
+                    with patch('builtins.print') as log:
+                        response = await self.client.get('/auth/callback', params={'state': state, 'code': secret_text},
+                                                         headers={'Cookie': LOGIN_COOKIE + '=' + state},
+                                                         allow_redirects=False)
+                    if reason is None:
+                        self.assertEqual(response.status, 303)
+                        self.assertTrue(self.dashboard.sessions)
+                        log.assert_not_called()
+                    else:
+                        self.assertEqual(response.status, 403)
+                        self.assertFalse(self.dashboard.sessions)
+                        self.assertNotIn(SESSION_COOKIE, response.cookies)
+                        text = await response.text()
+                        self.assertIn('Check the bot service logs', text)
+                        log.assert_called_once()
+                        diagnostic = log.call_args.args[0]
+                        self.assertIn('reason=' + reason, diagnostic)
+                        stage = 'token_exchange' if reason.startswith('token_endpoint') else 'id_token_verification'
+                        self.assertIn('stage=' + stage, diagnostic)
+                        for sensitive in (secret_text, state, scenario['verifier'], scenario.get('token', secret_text)):
+                            self.assertNotIn(sensitive, diagnostic)
+                            self.assertNotIn(sensitive, text)
+                        self.assertIn("script-src 'self'", response.headers['Content-Security-Policy'])
+                    self.assertNotIn(state, self.dashboard.logins)
+
+    async def test_connection_errors_log_only_safe_reason_not_exception_details(self):
+        state, _, _ = await self.begin_login()
+        with patch.object(self.dashboard, '_exchange', new_callable=AsyncMock,
+                          side_effect=TimeoutError('secret-callback-code')), patch('builtins.print') as log:
+            response = await self.client.get('/auth/callback', params={'state': state, 'code': 'secret-callback-code'},
+                                             headers={'Cookie': LOGIN_COOKIE + '=' + state}, allow_redirects=False)
+        self.assertEqual(response.status, 403)
+        log.assert_called_once_with('Dashboard Telegram login failed: stage=token_exchange '
+                                    'reason=telegram_request_timed_out', flush=True)
         self.assertFalse(self.dashboard.sessions)
 
     async def test_login_and_session_requests_are_rate_limited(self):

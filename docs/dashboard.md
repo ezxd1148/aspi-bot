@@ -155,6 +155,38 @@ historical data. Provider test results are kept for the current process lifetime
 Partial media publication and process crashes are not transactional across the
 Telegram API. If publishing partially fails, inspect the channel before retrying.
 
+## Troubleshooting Telegram login
+
+If the callback displays **Could not verify Telegram login**, update the checkout,
+restart `aspi-bot`, and attempt a fresh login from the public login page. Then run:
+
+```bash
+sudo journalctl -u aspi-bot --since "5 minutes ago" --no-pager --grep="Dashboard Telegram login failed"
+```
+
+The diagnostic reports the failed stage and a safe reason, for example:
+
+```text
+Dashboard Telegram login failed: stage=token_exchange reason=token_endpoint_http_401_invalid_client
+```
+
+| Reason | What to check |
+| --- | --- |
+| `token_endpoint_http_401_invalid_client` | Copy the Login Widget Client ID and Client Secret from the same bot in BotFather into `.env`, then restart. These are separate from the bot token. |
+| `token_endpoint_http_400_invalid_grant` | Start a fresh login; confirm the exact HTTPS callback URI matches `DASHBOARD_URL` plus `/auth/callback`. Codes expire and cannot be reused. |
+| `unsupported_signing_algorithm_set_botfather_RS256` | Select RS256 under BotFather's Login Widget advanced settings. |
+| `client_id_mismatch` | Confirm the Client ID belongs to the bot used for this login. |
+| `token_expired`, `token_not_yet_valid_check_server_clock`, `login_token_too_old` | Check EC2's clock with `timedatectl status`, then start a fresh login. |
+| `telegram_connection_failed`, `telegram_request_timed_out`, `signing_keys_http_...` | Check outbound HTTPS connectivity from EC2 to `oauth.telegram.org`. |
+| `missing_claim_nonce`, `nonce_mismatch`, `invalid_signature`, or other verification failures | Share only the diagnostic line for investigation. Verification still denies access. |
+
+Diagnostics omit credentials, callback codes, tokens, profile claims, and provider
+error descriptions. Do not share your `.env`, a full callback URL, or ID token.
+
+The dashboard uses a redirect flow and external local JavaScript; it does not
+require inline scripts. A browser CSP warning alone does not identify this
+server-side verification failure. Keep `script-src 'self'` while diagnosing it.
+
 ## Rollback
 
 Clear `DASHBOARD_URL` and restart `aspi-bot.service` to disable the dashboard.

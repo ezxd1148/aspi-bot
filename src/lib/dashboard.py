@@ -24,6 +24,31 @@ LOGIN_COOKIE = "__Host-aspi-login"
 ISSUER = "https://oauth.telegram.org"
 
 
+class LoginVerificationError(ValueError):
+    """A fixed diagnostic code; never include provider response text or tokens."""
+
+
+def _login_failure_reason(error):
+    if isinstance(error, LoginVerificationError):
+        return str(error)
+    if isinstance(error, jwt.MissingRequiredClaimError):
+        claim = error.claim if error.claim in ("iss", "aud", "exp", "iat", "sub", "id", "nonce") else "required"
+        return "missing_claim_" + claim
+    for kind, reason in ((jwt.ExpiredSignatureError, "token_expired"),
+                         (jwt.ImmatureSignatureError, "token_not_yet_valid_check_server_clock"),
+                         (jwt.InvalidAudienceError, "client_id_mismatch"),
+                         (jwt.InvalidIssuerError, "issuer_mismatch"),
+                         (jwt.InvalidSignatureError, "invalid_signature"),
+                         (jwt.InvalidIssuedAtError, "invalid_issued_at"),
+                         (jwt.PyJWTError, "invalid_id_token"),
+                         (aiohttp.ContentTypeError, "unexpected_response_content_type"),
+                         (aiohttp.ClientError, "telegram_connection_failed"),
+                         (TimeoutError, "telegram_request_timed_out")):
+        if isinstance(error, kind):
+            return reason
+    return "invalid_response"
+
+
 @dataclass(frozen=True)
 class Settings:
     origin: str
@@ -187,33 +212,53 @@ class Dashboard:
                 "redirect_uri": self.settings.callback_url, "client_id": self.settings.client_id,
                 "code_verifier": verifier}, allow_redirects=False) as response:
             if response.status != 200:
-                raise ValueError("Token exchange failed")
+                # Only allow known OAuth codes into logs, never response descriptions.
+                reason = "token_endpoint_http_" + str(response.status)
+                try:
+                    data = await response.json()
+                    oauth_error = data.get("error") if isinstance(data, dict) else None
+                    if oauth_error in ("invalid_client", "invalid_grant", "invalid_request",
+                                       "unauthorized_client", "unsupported_grant_type"):
+                        reason += "_" + oauth_error
+                except (ValueError, aiohttp.ClientError):
+                    pass
+                raise LoginVerificationError(reason)
             data = await response.json()
-            return data["id_token"]
+            token = data.get("id_token") if isinstance(data, dict) else None
+            if not isinstance(token, str) or not token:
+                raise LoginVerificationError("token_endpoint_missing_id_token")
+            return token
 
     async def _verify_token(self, token, nonce):
         header = jwt.get_unverified_header(token)
-        if header.get("alg") != "RS256" or not isinstance(header.get("kid"), str):
-            raise ValueError("Unsupported signature")
+        if header.get("alg") != "RS256":
+            raise LoginVerificationError("unsupported_signing_algorithm_set_botfather_RS256")
+        if not isinstance(header.get("kid"), str):
+            raise LoginVerificationError("missing_signing_key_id")
         if time.time() > self.keys_until or not any(k.get("kid") == header["kid"] for k in self.keys):
             async with self.http.get(ISSUER + "/.well-known/jwks.json", allow_redirects=False) as response:
                 if response.status != 200:
-                    raise ValueError("Signing keys unavailable")
-                self.keys = (await response.json())["keys"]
+                    raise LoginVerificationError("signing_keys_http_" + str(response.status))
+                data = await response.json()
+                keys = data.get("keys") if isinstance(data, dict) else None
+                if not isinstance(keys, list) or not all(isinstance(key, dict) for key in keys):
+                    raise LoginVerificationError("invalid_signing_keys_response")
+                self.keys = keys
                 self.keys_until = time.time() + 3600
         key = next((k for k in self.keys if k.get("kid") == header["kid"]
                     and k.get("kty") == "RSA" and k.get("use", "sig") == "sig"), None)
         if key is None:
-            raise ValueError("Unknown signing key")
+            raise LoginVerificationError("unknown_signing_key")
         claims = jwt.decode(token, jwt.PyJWK.from_dict(key, algorithm="RS256").key,
                             algorithms=["RS256"], issuer=ISSUER, audience=self.settings.client_id,
                             options={"require": ["iss", "aud", "exp", "iat", "sub", "id", "nonce"]})
-        if (not isinstance(claims["nonce"], str) or not hmac.compare_digest(claims["nonce"], nonce)
-                or time.time() - claims["iat"] > 300):
-            raise ValueError("Stale or replayed login")
+        if not isinstance(claims["nonce"], str) or not hmac.compare_digest(claims["nonce"].encode(), nonce.encode()):
+            raise LoginVerificationError("nonce_mismatch")
+        if time.time() - claims["iat"] > 300:
+            raise LoginVerificationError("login_token_too_old")
         user_id = claims["id"]
         if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
-            raise ValueError("Invalid Telegram user ID")
+            raise LoginVerificationError("invalid_telegram_user_id")
         return SimpleNamespace(id=user_id, full_name=str(claims.get("name", "Telegram admin"))[:128],
                                username=str(claims.get("preferred_username", ""))[:64], is_bot=False)
 
@@ -229,11 +274,14 @@ class Dashboard:
         code = request.query.get("code", "")
         if not code or len(code) > 4096:
             raise web.HTTPForbidden(text="Telegram login was cancelled. Start again.")
+        stage = "token_exchange"
         try:
             token = await self._exchange(code, login["verifier"])
+            stage = "id_token_verification"
             user = await self._verify_token(token, login["nonce"])
-        except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError, jwt.PyJWTError):
-            raise web.HTTPForbidden(text="Could not verify Telegram login. Start again.")
+        except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError, jwt.PyJWTError) as error:
+            print(f"Dashboard Telegram login failed: stage={stage} reason={_login_failure_reason(error)}", flush=True)
+            raise web.HTTPForbidden(text="Could not verify Telegram login. Check the bot service logs, then start again.") from None
         if await self._role(user.id) is None:
             raise web.HTTPForbidden(text="Only administrators of the configured review group can enter.")
         if len(self.sessions) >= 100:
