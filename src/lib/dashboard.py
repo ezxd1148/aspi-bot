@@ -257,6 +257,11 @@ class Dashboard:
         if time.time() - claims["iat"] > 300:
             raise LoginVerificationError("login_token_too_old")
         user_id = claims["id"]
+        # Normalize numeric strings only after verifying the signed token.
+        if isinstance(user_id, str):
+            if not (user_id.isascii() and user_id.isdecimal() and len(user_id) <= 20):
+                raise LoginVerificationError("invalid_telegram_user_id")
+            user_id = int(user_id)
         if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
             raise LoginVerificationError("invalid_telegram_user_id")
         return SimpleNamespace(id=user_id, full_name=str(claims.get("name", "Telegram admin"))[:128],

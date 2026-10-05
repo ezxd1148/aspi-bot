@@ -235,6 +235,7 @@ class DashboardSecurityTests(unittest.IsolatedAsyncioTestCase):
         async with ClientSession() as http:
             self.dashboard.http = http
             cases = [({}, None),
+                     ({'claims': {'id': '10'}}, None),
                      ({'exchange_error': 'invalid_client', 'status': 401}, 'token_endpoint_http_401_invalid_client'),
                      ({'exchange_error': 'invalid_grant', 'status': 400}, 'token_endpoint_http_400_invalid_grant'),
                      ({'exchange_error': secret_text, 'status': 400}, 'token_endpoint_http_400'),
@@ -261,6 +262,7 @@ class DashboardSecurityTests(unittest.IsolatedAsyncioTestCase):
                     if reason is None:
                         self.assertEqual(response.status, 303)
                         self.assertTrue(self.dashboard.sessions)
+                        self.bot.get_chat_member.assert_awaited_with(chat_id=-100123, user_id=10)
                         log.assert_not_called()
                     else:
                         self.assertEqual(response.status, 403)
@@ -345,10 +347,23 @@ class TelegramTokenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(user.id, 10)
         self.assertEqual(user.full_name, 'Admin')
 
+    async def test_telegram_id_formats_normalize_integer_and_decimal_string(self):
+        for telegram_id in (10, '10', 9876543210, '9876543210'):
+            with self.subTest(telegram_id=telegram_id):
+                user = await self.dashboard._verify_token(self.encode({'id': telegram_id}), 'nonce')
+                self.assertEqual(user.id, int(telegram_id))
+                self.assertIs(type(user.id), int)
+
+    async def test_telegram_id_formats_reject_malformed_values(self):
+        for telegram_id in (None, True, False, 0, -1, 10.0, '', '0', '-10', '+10', ' 10', '10 ',
+                            '10.0', '1e1', '١٠', '１０', '1' * 100, [], {}):
+            with self.subTest(telegram_id=telegram_id), self.assertRaises((ValueError, jwt.PyJWTError)):
+                await self.dashboard._verify_token(self.encode({'id': telegram_id}), 'nonce')
+
     async def test_signature_issuer_audience_expiry_nonce_and_freshness_are_enforced(self):
         for changes in ({'iss': 'https://evil.example'}, {'aud': '999'}, {'exp': int(time.time()) - 5},
                         {'nonce': 'wrong'}, {'iat': int(time.time()) - 600}, {'iat': int(time.time()) + 600},
-                        {'id': '10'}, {'id': True}, {'id': -1}):
+                        {'id': True}, {'id': -1}):
             with self.subTest(changes=changes), self.assertRaises((ValueError, jwt.PyJWTError)):
                 await self.dashboard._verify_token(self.encode(changes), 'nonce')
         other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
